@@ -24,7 +24,21 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
 from gi.repository import Gdk, GLib, Gtk, Pango  # noqa: E402
 
-MAX_ITEMS = 200
+# Retention (overridable in ${XDG_CONFIG_HOME:-~/.config}/snapshot-kwin/config.json):
+#   {"max_age_days": 183, "max_bytes": 5368709120}
+DEFAULT_MAX_AGE_DAYS = 183           # about half a year
+DEFAULT_MAX_BYTES = 5 * 1024 ** 3    # 5 GiB of stored images
+PICKER_ROWS = 300                    # newest rows rendered in the picker (search covers all)
+
+
+def load_config():
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    cfg = {"max_age_days": DEFAULT_MAX_AGE_DAYS, "max_bytes": DEFAULT_MAX_BYTES}
+    try:
+        cfg.update(json.loads((Path(base) / "snapshot-kwin" / "config.json").read_text()))
+    except (OSError, ValueError):
+        pass
+    return cfg
 PICKER_TITLE = "snapshot-kwin-clipboard"
 
 
@@ -50,6 +64,7 @@ class History:
         self.index = self.dir / "index.json"
         self.items = []  # newest first: {"id","ts","kind","text"|"file","hash"}
         self.version = 0  # bumped on every change; the picker re-renders only when it moved
+        self.config = load_config()
         self.log = log
         self._load()
 
@@ -59,6 +74,41 @@ class History:
             self.items = [i for i in data if i.get("kind") == "text" or (self.dir / i.get("file", "")).exists()]
         except (OSError, ValueError):
             self.items = []
+
+    def prune(self, save=True):
+        """Drop items older than max_age_days, then oldest images until under max_bytes."""
+        cutoff = time.time() - float(self.config["max_age_days"]) * 86400
+        keep, drop = [], []
+        for i in self.items:
+            (keep if i["ts"] >= cutoff else drop).append(i)
+        total = sum(self._size(i) for i in keep)
+        limit = int(self.config["max_bytes"])
+        for i in reversed(list(keep)):  # oldest first
+            if total <= limit:
+                break
+            if i["kind"] == "image":
+                total -= self._size(i)
+                keep.remove(i)
+                drop.append(i)
+        for i in drop:
+            if i["kind"] == "image":
+                (self.dir / i["file"]).unlink(missing_ok=True)
+        if drop:
+            self.items = keep
+            self.log(f"pruned {len(drop)} item(s); stored images {total / 1e6:.1f} MB")
+            if save:
+                self._save()
+
+    def _size(self, item):
+        if item["kind"] != "image":
+            return len(item.get("text", "").encode())
+        try:
+            return (self.dir / item["file"]).stat().st_size
+        except OSError:
+            return 0
+
+    def total_bytes(self):
+        return sum(self._size(i) for i in self.items)
 
     def _save(self):
         self.version += 1
@@ -83,10 +133,7 @@ class History:
             else:
                 item["text"] = text
             self.items.insert(0, item)
-        for old in self.items[MAX_ITEMS:]:
-            if old["kind"] == "image":
-                (self.dir / old["file"]).unlink(missing_ok=True)
-        del self.items[MAX_ITEMS:]
+        self.prune(save=False)
         self._save()
 
     def seed(self, texts_newest_first, pngs_oldest_first):
@@ -169,7 +216,7 @@ class Picker(Gtk.Window):
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.search = Gtk.SearchEntry(placeholder_text="搜索文字…")
-        self.search.connect("search-changed", lambda *_: self.listbox.invalidate_filter())
+        self.search.connect("search-changed", lambda *_: self._on_search())
         box.append(self.search)
         self.listbox = Gtk.ListBox(selection_mode=Gtk.SelectionMode.SINGLE, activate_on_single_click=False)
         self.listbox.set_filter_func(self._filter)
@@ -187,13 +234,24 @@ class Picker(Gtk.Window):
         self.add_controller(keys)
 
     # ── content ──────────────────────────────────────────────
-    def refresh(self):
+    def _on_search(self):
+        q = self.search.get_text().strip().lower()
+        if q:
+            # search the whole history, not only the rendered newest rows
+            hits = [i for i in self.history.items if i["kind"] == "text" and q in i["text"].lower()]
+            self.refresh(hits[:PICKER_ROWS])
+            self._rendered_version = -1  # next plain open re-renders the default list
+        else:
+            self.refresh()
+            self._rendered_version = self.history.version
+
+    def refresh(self, items=None):
         child = self.listbox.get_first_child()
         while child is not None:
             nxt = child.get_next_sibling()
             self.listbox.remove(child)
             child = nxt
-        for item in self.history.items:
+        for item in (items if items is not None else self.history.items[:PICKER_ROWS]):
             row = Gtk.ListBoxRow()
             row.item = item
             if item["kind"] == "image":
@@ -219,11 +277,8 @@ class Picker(Gtk.Window):
             self._rendered_version = self.history.version
         return False
 
-    def _filter(self, row):
-        q = self.search.get_text().strip().lower()
-        if not q:
-            return True
-        return row.item["kind"] == "text" and q in row.item["text"].lower()
+    def _filter(self, _row):
+        return True  # filtering is done by _on_search over the whole history
 
     # ── show / hide ──────────────────────────────────────────
     def open(self):

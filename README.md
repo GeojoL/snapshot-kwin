@@ -50,7 +50,14 @@ Requirements: Plasma 6 Wayland, `python3` with `gi` (GTK 4), `pycairo` and
 Then bind a global shortcut to `~/.local/bin/snapshot-kwin-capture`
 (System Settings → Shortcuts → Add Command).
 
-Captures are saved to `${XDG_STATE_HOME:-~/.local/state}/snapshot-kwin/history/`.
+Captures and the clipboard history live in
+`${XDG_STATE_HOME:-~/.local/state}/snapshot-kwin/clipboard/` (each image once).
+Retention defaults to half a year and 5 GiB of images; override in
+`${XDG_CONFIG_HOME:-~/.config}/snapshot-kwin/config.json`:
+
+```json
+{"max_age_days": 183, "max_bytes": 5368709120}
+```
 
 ## Tests
 

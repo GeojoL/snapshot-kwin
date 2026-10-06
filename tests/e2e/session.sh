@@ -12,7 +12,7 @@ call() { busctl --user call -- "$A" "$P" "$A" "$@"; }
 pass=0; fail=0
 check() { if eval "$2"; then echo "PASS $1"; pass=$((pass+1)); else echo "FAIL $1"; fail=$((fail+1)); fi; }
 png_size() { python3 -c "import struct,sys;d=open(sys.argv[1],'rb').read(24);print('%dx%d'%struct.unpack('>II',d[16:24]))" "$1"; }
-newest() { ls -t "$XDG_STATE_HOME"/snapshot-kwin/history/*"${1:-}".png 2>/dev/null | head -1; }
+newest() { ls -t "$XDG_STATE_HOME"/snapshot-kwin/clipboard/*.png 2>/dev/null | head -1; }
 
 PYTHONPATH="$SKW_SRC" "$SKW_PY" -m snapshot_kwin.app >"$SKW_WORK/daemon.log" 2>&1 &
 DAEMON=$!
@@ -42,7 +42,7 @@ ghostty --title=e2e-long --window-width=100 --window-height=40 -e "$SKW_WORK/scr
 sleep 1.5
 call TestLong iiiii 20 60 800 600 -1
 for _ in $(seq 60); do grep -q 'long capture done\|long capture failed' "$SKW_WORK/daemon.log" && break; sleep 1; done
-LONG="$(newest long)"
+LONG="$(newest)"
 check "long capture taller than one screen" '[ -n "$LONG" ] && [ "$(png_size "$LONG" | cut -dx -f2)" -gt 900 ]'
 kill $GL 2>/dev/null
 

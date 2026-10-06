@@ -273,9 +273,10 @@ class Overlay(Gtk.Window):
         cr = cairo.Context(out)
         cr.set_source_surface(self.surface, -sx, -sy)
         cr.paint()
-        path = history_dir() / (time.strftime("%Y%m%d-%H%M%S-") + f"{int(time.time() * 1000) % 1000:03d}.png")
-        out.write_to_png(str(path))
-        png = path.read_bytes()
+        buf = io.BytesIO()
+        out.write_to_png(buf)
+        png = buf.getvalue()
+        path = "history"
         provider = Gdk.ContentProvider.new_for_bytes("image/png", GLib.Bytes.new(png))
         self.get_clipboard().set_content(provider)
         self.app.history.add_image(png)
@@ -375,8 +376,8 @@ class App(Gtk.Application):
         self.history = History(log=_log)
         if not self.history.items:
             self._seed_history()
-        else:
-            self._backfill_captures()
+        self._migrate_legacy_captures()
+        self.history.prune()
         self.picker = Picker(self, self.history, on_paste=self._paste_into_focused, on_edit=self._edit_image)
         self.editor = Editor(self, on_done=self._edit_done)
         self._watch_klipper()
@@ -448,9 +449,10 @@ class App(Gtk.Application):
         out = L["st"].render()
         if out is None:
             return False
-        path = history_dir() / (time.strftime("%Y%m%d-%H%M%S-") + "long.png")
-        out.write_to_png(str(path))
-        png = path.read_bytes()
+        buf = io.BytesIO()
+        out.write_to_png(buf)
+        png = buf.getvalue()
+        path = "history"
         self.overlay.get_clipboard().set_content(Gdk.ContentProvider.new_for_bytes("image/png", GLib.Bytes.new(png)))
         self.history.add_image(png)
         GLib.idle_add(self.picker.prerender)
@@ -475,24 +477,30 @@ class App(Gtk.Application):
             texts = [str(t) for t in dbus_iface(k, "org.kde.klipper.klipper").getClipboardHistoryMenu()]
         except Exception as e:  # noqa: BLE001
             _log(f"klipper seed failed: {e}")
-        pngs = sorted(history_dir().glob("*.png"), key=lambda p: p.stat().st_mtime)
-        self.history.seed(texts, pngs)
-        _log(f"seeded history: {len(texts)} texts, {len(pngs)} images")
+        self.history.seed(texts, [])
+        _log(f"seeded history: {len(texts)} texts")
 
-    def _backfill_captures(self):
-        """Captures saved to disk but missing from the history (e.g. after a crash)."""
+    def _migrate_legacy_captures(self):
+        """v0.0.1 also wrote every capture to history_dir(); keep each image once.
+
+        Files already in the history are deleted (same bytes, same hash); missing
+        ones are imported with their original time, then deleted.
+        """
+        legacy = sorted(history_dir().glob("*.png"), key=lambda p: p.stat().st_mtime)
+        if not legacy:
+            return
         known = {i["hash"] for i in self.history.items}
-        added = 0
-        for p in sorted(history_dir().glob("*.png"), key=lambda p: p.stat().st_mtime):
+        imported = 0
+        for p in legacy:
             data = p.read_bytes()
             if hashlib.sha256(data).hexdigest() not in known:
                 self.history.add_image(data)
                 self.history.items[0]["ts"] = p.stat().st_mtime
-                added += 1
-        if added:
-            self.history.items.sort(key=lambda i: i["ts"], reverse=True)
-            self.history._save()
-            _log(f"backfilled {added} capture(s) into history")
+                imported += 1
+            p.unlink()
+        self.history.items.sort(key=lambda i: i["ts"], reverse=True)
+        self.history._save()
+        _log(f"migrated legacy captures: {len(legacy)} file(s), {imported} imported, duplicates removed")
 
     def _record_clipboard(self):
         # Our own captures/edits are recorded directly; skip when we own the selection.
