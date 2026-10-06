@@ -281,8 +281,14 @@ class Picker(Gtk.Window):
         terminal, file drop in a browser/chat) plus raw image/png; text as text."""
         if item["kind"] == "image":
             path = self.history.path(item)
+            # Plain text/uri-list, not a GdkFileList value: GTK would offer the file
+            # through the document portal (application/vnd.portal.filetransfer) first,
+            # and Ghostty fails to convert that ("Could not convert data ... to
+            # GdkFileList"), so the drop did nothing. text/plain gives terminals the path.
+            uri = Gio.File.new_for_path(str(path)).get_uri()
             return Gdk.ContentProvider.new_union([
-                Gdk.ContentProvider.new_for_value(Gdk.FileList.new_from_list([Gio.File.new_for_path(str(path))])),
+                Gdk.ContentProvider.new_for_bytes("text/uri-list", GLib.Bytes.new(f"{uri}\r\n".encode())),
+                Gdk.ContentProvider.new_for_bytes("text/plain;charset=utf-8", GLib.Bytes.new(str(path).encode())),
                 Gdk.ContentProvider.new_for_bytes("image/png", GLib.Bytes.new(path.read_bytes())),
             ])
         return Gdk.ContentProvider.new_for_value(item["text"])
