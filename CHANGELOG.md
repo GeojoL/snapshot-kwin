@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Clipboard history rows can be dragged out (images as PNG file + `image/png`, text as text).
+- `tools/term-paste`: Meta+V in a terminal pastes text or images into the active
+  tmux pane (Ctrl+V for Claude Code, a saved PNG path elsewhere); linked by `install.sh`.
+
 ## v0.0.3 — 2026-10-06
 
 - Long capture scrolls the pane under the *center* of the selection: the pointer

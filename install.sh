@@ -21,6 +21,7 @@ PY_COPY="$LIBEXEC/snapshot-kwin-python"
 DESKTOP="$DATA_HOME/applications/$APP_ID.desktop"
 UNIT="$CONFIG_HOME/systemd/user/snapshot-kwin.service"
 TRIGGER="$BIN/snapshot-kwin-capture"
+TERM_PASTE="$BIN/term-paste"
 KWIN_SCRIPT_ID=snapshot-kwin-windows
 KWIN_EFFECT_ID=snapshot-kwin-noanim
 
@@ -31,7 +32,7 @@ uninstall() {
   busctl --user call org.kde.KWin /Effects org.kde.kwin.Effects unloadEffect s "$KWIN_EFFECT_ID" >/dev/null 2>&1 || true
   kpackagetool6 --type KWin/Effect -r "$KWIN_EFFECT_ID" >/dev/null 2>&1 || true
   kwriteconfig6 --file kwinrc --group Plugins --key "${KWIN_EFFECT_ID}Enabled" --delete 2>/dev/null || true
-  rm -f -- "$UNIT" "$DESKTOP" "$TRIGGER"
+  rm -f -- "$UNIT" "$DESKTOP" "$TRIGGER" "$TERM_PASTE"
   rm -rf -- "$LIBEXEC"
   systemctl --user daemon-reload
   echo "snapshot-kwin removed (history in \${XDG_STATE_HOME:-~/.local/state}/snapshot-kwin kept)"
@@ -107,6 +108,9 @@ cat > "$TRIGGER" <<EOF
 exec busctl --user call $APP_ID /io/github/geojol/SnapshotKwin $APP_ID Capture
 EOF
 chmod 0755 "$TRIGGER"
+
+# terminal paste helper (bind Meta+V in the terminal to it, e.g. via xremap)
+ln -sfn "$SRC/tools/term-paste" "$TERM_PASTE"
 
 systemctl --user daemon-reload
 systemctl --user enable snapshot-kwin.service >/dev/null

@@ -1,0 +1,25 @@
+#!/bin/bash
+# Meta+V in the terminal (bound by xremap for Ghostty), without synthesizing keys:
+#   text          -> bracketed paste into the active tmux pane
+#   image, claude -> Ctrl+V to Claude Code (it reads the image from the clipboard)
+#   image, other  -> save the PNG and bracketed-paste its path
+# Keys are sent through tmux, so a still-held Meta cannot leak into them.
+set -u
+types=$(wl-paste -l 2>/dev/null) || exit 0
+read -r pane cmd < <(tmux display -p '#{pane_id} #{pane_current_command}' 2>/dev/null) || exit 0
+[ -n "${pane:-}" ] || exit 0
+
+paste_text() { tmux load-buffer -b term-paste - && tmux paste-buffer -p -d -b term-paste -t "$pane"; }
+
+if grep -qxE 'text/plain(;charset=utf-8)?|UTF8_STRING|STRING|TEXT' <<<"$types"; then
+  wl-paste -n | paste_text
+elif grep -qx 'image/png' <<<"$types"; then
+  if [ "$cmd" = claude ]; then
+    tmux send-keys -t "$pane" C-v
+  else
+    dir="${XDG_STATE_HOME:-$HOME/.local/state}/snapshot-kwin/paste"
+    mkdir -p "$dir"
+    f="$dir/$(date +%Y%m%d-%H%M%S-%3N).png"
+    wl-paste -t image/png > "$f" && printf '%q' "$f" | paste_text
+  fi
+fi

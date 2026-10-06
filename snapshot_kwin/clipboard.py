@@ -22,7 +22,7 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
-from gi.repository import Gdk, GLib, Gtk, Pango  # noqa: E402
+from gi.repository import Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
 
 # Retention (overridable in ${XDG_CONFIG_HOME:-~/.config}/snapshot-kwin/config.json):
 #   {"max_age_days": 183, "max_bytes": 5368709120}
@@ -265,10 +265,31 @@ class Picker(Gtk.Window):
                 lbl = Gtk.Label(label=text[:400], xalign=0, wrap=True, lines=2,
                                 ellipsize=Pango.EllipsizeMode.END)
                 row.set_child(lbl)
+            drag = Gtk.DragSource(actions=Gdk.DragAction.COPY)
+            drag.connect("prepare", self._drag_prepare, item)
+            drag.connect("drag-begin", self._drag_begin)
+            drag.connect("drag-end", lambda *_: self.close_picker())
+            row.add_controller(drag)
             self.listbox.append(row)
         first = self.listbox.get_row_at_index(0)
         if first:
             self.listbox.select_row(first)
+
+    # ── drag out ─────────────────────────────────────────────
+    def _drag_prepare(self, _src, _x, _y, item):
+        """Rows drag out like files: images as the PNG file (path drop in a
+        terminal, file drop in a browser/chat) plus raw image/png; text as text."""
+        if item["kind"] == "image":
+            path = self.history.path(item)
+            return Gdk.ContentProvider.new_union([
+                Gdk.ContentProvider.new_for_value(Gdk.FileList.new_from_list([Gio.File.new_for_path(str(path))])),
+                Gdk.ContentProvider.new_for_bytes("image/png", GLib.Bytes.new(path.read_bytes())),
+            ])
+        return Gdk.ContentProvider.new_for_value(item["text"])
+
+    def _drag_begin(self, src, _drag):
+        row = src.get_widget()
+        src.set_icon(Gtk.WidgetPaintable.new(row.get_child()), 0, 0)
 
     def prerender(self):
         """Render in the background (while hidden) so opening is instant."""
