@@ -8,6 +8,7 @@ The process stays resident and keeps the overlay window built, so a capture only
 costs the KWin grab (~60 ms) plus one frame.
 """
 import hashlib
+import io
 import json
 import os
 import subprocess
@@ -28,6 +29,7 @@ import dbus  # noqa: E402
 
 from .capture import CaptureError, KWinCapture  # noqa: E402
 from .clipboard import History, Picker  # noqa: E402
+from .editor import Editor  # noqa: E402
 
 
 def dbus_iface(obj, name):
@@ -45,6 +47,8 @@ DBUS_XML = f"""
     <method name="Capture"/>
     <method name="ShowHistory"/>
     <method name="TestHideHistory"/>
+    <method name="TestEditLatest"/>
+    <method name="TestEditorArrowAndFinish"/>
     <!-- test hooks: drive the overlay without moving the user's pointer -->
     <method name="TestSelect"><arg type="i" name="x"/><arg type="i" name="y"/><arg type="i" name="w"/><arg type="i" name="h"/></method>
     <method name="TestClick"><arg type="i" name="x"/><arg type="i" name="y"/></method>
@@ -293,6 +297,24 @@ class App(Gtk.Application):
         elif method == "ShowHistory":
             invocation.return_value(None)
             GLib.idle_add(self.show_history)
+        elif method == "TestEditLatest":
+            invocation.return_value(None)
+            img = next((i for i in self.history.items if i["kind"] == "image"), None)
+            if img:
+                GLib.idle_add(lambda: self._edit_image(img) or False)
+        elif method == "TestEditorArrowAndFinish":
+            invocation.return_value(None)
+
+            def go():
+                ed = self.editor
+                if ed.base is not None and ed.get_visible():
+                    w, h = ed.base.get_width(), ed.base.get_height()
+                    ed._push_undo()
+                    ed.objects.append({"kind": "arrow", "p1": (w * 0.1, h * 0.1), "p2": (w * 0.8, h * 0.7),
+                                       "color": ed.color, "width": 6})
+                    ed.finish()
+                return False
+            GLib.idle_add(go)
         elif method == "TestHideHistory":
             invocation.return_value(None)
             GLib.idle_add(lambda: self.picker.close_picker() or False)
@@ -326,6 +348,7 @@ class App(Gtk.Application):
         else:
             self._backfill_captures()
         self.picker = Picker(self, self.history, on_paste=self._paste_into_focused, on_edit=self._edit_image)
+        self.editor = Editor(self, on_done=self._edit_done)
         self._watch_klipper()
         GLib.idle_add(self.picker.prerender)
         GLib.idle_add(self._reload_window_feed)
@@ -397,7 +420,18 @@ class App(Gtk.Application):
         return False
 
     def _edit_image(self, item):
-        _log(f"edit requested for {item['id']} (editor not implemented yet)")
+        self.editor.open_png(self.history.path(item))
+        _log(f"editing {item['id']}")
+
+    def _edit_done(self, surface, window):
+        """Enter in the editor: the result becomes clipboard item #1 (and history)."""
+        buf = io.BytesIO()
+        surface.write_to_png(buf)
+        png = buf.getvalue()
+        window.get_clipboard().set_content(Gdk.ContentProvider.new_for_bytes("image/png", GLib.Bytes.new(png)))
+        self.history.add_image(png)
+        GLib.idle_add(self.picker.prerender)
+        _log(f"edit saved to clipboard size={surface.get_width()}x{surface.get_height()}")
 
     def _reload_window_feed(self):
         # The KWin script pushes the window list only on changes; reloading it makes
