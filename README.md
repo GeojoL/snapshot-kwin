@@ -17,6 +17,20 @@ grim/slurp 依赖 wlr-screencopy / ext-image-copy-capture,KWin 6.7.5 均未实�
 
 **目标:按键 → 冻结画面框选 ≤ 150 ms。**
 
+## 操作逻辑(GeojoLu 2026-10-06 定,以此为准)
+
+1. **按 Meta+Alt+1** → 冻结画面,三选一:
+   - **拖框** → 截选区
+   - **点某个窗口(app 栏)** → 立即截该窗口全部
+   - **长图** → 自动滚动截取并拼接(需要时间,显示进度)
+2. **截完不出现编辑页面**:结果直接进剪贴板(并进本工具的图片历史)。
+3. **编辑入口在剪贴板**:Meta+Shift+V 打开剪贴板历史(文字 + 图片),选图片 → 编辑 →
+   **回车 = 把编辑结果放回剪贴板第一条**。
+4. 之后 **Meta+V** 直接粘贴剪贴板第一条。
+
+长图实现:KWin 不允许截图工具替其它窗口滚动,但本机用户有 /dev/uinput 权限,
+用虚拟鼠标在目标窗口上发滚轮事件,每段用 ScreenShot2 `CaptureWindow` 取图,按重叠区匹配拼接。
+
 ## 功能范围(以 Spectacle 标注器为参考)
 
 1. 截图:区域(拖框)、全屏、当前窗口;Esc 取消
@@ -26,7 +40,7 @@ grim/slurp 依赖 wlr-screencopy / ext-image-copy-capture,KWin 6.7.5 均未实�
 5. 输出:复制到剪贴板(默认)、保存到 ~/Pictures/Screenshots、拖出
 6. 键位:macOS 习惯(Meta+C 复制、Meta+S 保存、Meta+Z / Meta+Shift+Z 撤销重做、回车完成)
 
-暂不做:滚动长截图(Wayland 下无法替其它窗口注入滚动)、录屏(继续用 Spectacle)。
+暂不做:录屏(继续用 Spectacle)。
 
 ## 架构
 
@@ -42,7 +56,9 @@ grim/slurp 依赖 wlr-screencopy / ext-image-copy-capture,KWin 6.7.5 均未实�
 ## 状态
 
 - [x] 可行性:KWin 取图 55–75 ms(`probe` 实测)
-- [ ] 守护进程 + 框选(验收:按键到框选 ≤ 150 ms,拟人测试)
+- [ ] 守护进程 + 框选 / 点选窗口(验收:按键到框选 ≤ 150 ms,拟人测试)
+- [ ] 长图:uinput 滚动 + 拼接
+- [ ] 剪贴板历史(文字 + 图片)取代 clip-pick;图片可进入编辑,回车写回剪贴板第一条
 - [ ] 标注工具
 - [ ] 简单编辑
 - [ ] 输出与键位
