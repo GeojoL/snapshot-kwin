@@ -6,8 +6,9 @@ emits org.kde.klipper.klipper.clipboardHistoryUpdated on every change; on that
 signal we read the current selection with wl-paste and record it with a
 timestamp, so text and images share one ordered history.
 
-Picker: Enter pastes into the previously focused window, Shift+Enter opens the
-item in the editor, Esc closes, typing filters text entries.
+Picker: Enter pastes into the previously focused window; double-click an image
+to edit it (double-click text pastes it); Shift+Enter also edits; Esc closes;
+typing filters text entries.
 """
 import hashlib
 import json
@@ -146,11 +147,13 @@ class Picker(Gtk.Window):
         box.append(self.search)
         self.listbox = Gtk.ListBox(selection_mode=Gtk.SelectionMode.SINGLE, activate_on_single_click=False)
         self.listbox.set_filter_func(self._filter)
-        self.listbox.connect("row-activated", lambda _lb, row: self._activate(row, edit=False))
+        # row-activated fires on double-click (activate_on_single_click=False):
+        # images open the editor, text is pasted. Enter is handled in _on_key.
+        self.listbox.connect("row-activated", lambda _lb, row: self._activate(row, edit=row.item["kind"] == "image"))
         scroller = Gtk.ScrolledWindow(vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER)
         scroller.set_child(self.listbox)
         box.append(scroller)
-        hint = Gtk.Label(label="回车 粘贴   ·   Shift+回车 编辑图片   ·   Esc 关闭", xalign=0)
+        hint = Gtk.Label(label="回车 粘贴   ·   双击图片 编辑   ·   Esc 关闭", xalign=0)
         hint.add_css_class("hint")
         box.append(hint)
         self.set_child(box)

@@ -18,7 +18,8 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
-from gi.repository import Gdk, Gio, GLib, Gtk  # noqa: E402
+gi.require_version("PangoCairo", "1.0")
+from gi.repository import Gdk, Gio, GLib, Gtk, Pango, PangoCairo  # noqa: E402
 
 import cairo  # noqa: E402
 
@@ -166,18 +167,21 @@ class Overlay(Gtk.Window):
         self._label(cr, "拖框 = 选区   ·   点击窗口 = 整个窗口   ·   Esc 取消", width / 2, 34, center=True)
 
     def _label(self, cr, text, x, y, center=False):
-        cr.select_font_face("Sans", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
-        cr.set_font_size(14)
-        ext = cr.text_extents(text)
+        # Pango (not cairo's toy text API) so CJK text gets a proper fallback font.
+        layout = PangoCairo.create_layout(cr)
+        layout.set_font_description(Pango.FontDescription.from_string("Sans Bold 11"))
+        layout.set_text(text, -1)
+        tw, th = layout.get_pixel_size()
         if center:
-            x -= ext.width / 2
+            x -= tw / 2
         pad = 8
+        top = y - th
         cr.set_source_rgba(0.07, 0.07, 0.11, 0.85)
-        cr.rectangle(x - pad, y - ext.height - pad, ext.width + 2 * pad, ext.height + 2 * pad)
+        cr.rectangle(x - pad, top - pad, tw + 2 * pad, th + 2 * pad)
         cr.fill()
         cr.set_source_rgba(0.80, 0.84, 0.96, 1)
-        cr.move_to(x, y)
-        cr.show_text(text)
+        cr.move_to(x, top)
+        PangoCairo.show_layout(cr, layout)
 
     # ── input ────────────────────────────────────────────────
     def _on_motion(self, _ctl, x, y):
