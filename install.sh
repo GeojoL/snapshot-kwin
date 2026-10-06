@@ -22,11 +22,15 @@ DESKTOP="$DATA_HOME/applications/$APP_ID.desktop"
 UNIT="$CONFIG_HOME/systemd/user/snapshot-kwin.service"
 TRIGGER="$BIN/snapshot-kwin-capture"
 KWIN_SCRIPT_ID=snapshot-kwin-windows
+KWIN_EFFECT_ID=snapshot-kwin-noanim
 
 uninstall() {
   systemctl --user disable --now snapshot-kwin.service 2>/dev/null || true
   kpackagetool6 --type KWin/Script -r "$KWIN_SCRIPT_ID" >/dev/null 2>&1 || true
   kwriteconfig6 --file kwinrc --group Plugins --key "${KWIN_SCRIPT_ID}Enabled" --delete 2>/dev/null || true
+  busctl --user call org.kde.KWin /Effects org.kde.kwin.Effects unloadEffect s "$KWIN_EFFECT_ID" >/dev/null 2>&1 || true
+  kpackagetool6 --type KWin/Effect -r "$KWIN_EFFECT_ID" >/dev/null 2>&1 || true
+  kwriteconfig6 --file kwinrc --group Plugins --key "${KWIN_EFFECT_ID}Enabled" --delete 2>/dev/null || true
   rm -f -- "$UNIT" "$DESKTOP" "$TRIGGER"
   rm -rf -- "$LIBEXEC"
   systemctl --user daemon-reload
@@ -70,6 +74,14 @@ else
 fi
 kwriteconfig6 --file kwinrc --group Plugins --key "${KWIN_SCRIPT_ID}Enabled" true
 
+# 3b. KWin effect: show our overlay/picker without the window open/close animation
+if kpackagetool6 --type KWin/Effect -s "$KWIN_EFFECT_ID" >/dev/null 2>&1; then
+  kpackagetool6 --type KWin/Effect -u "$SRC/kwin-effect" >/dev/null
+else
+  kpackagetool6 --type KWin/Effect -i "$SRC/kwin-effect" >/dev/null
+fi
+kwriteconfig6 --file kwinrc --group Plugins --key "${KWIN_EFFECT_ID}Enabled" true
+
 # 4. user service (Plasma session only; not started in gamescope/Game Mode)
 cat > "$UNIT" <<EOF
 [Unit]
@@ -102,4 +114,6 @@ systemctl --user restart snapshot-kwin.service
 # reload KWin scripts so the window feed starts now
 busctl --user call org.kde.KWin /KWin org.kde.KWin reconfigure >/dev/null 2>&1 || true
 busctl --user call org.kde.KWin /Scripting org.kde.kwin.Scripting start >/dev/null 2>&1 || true
+busctl --user call org.kde.KWin /Effects org.kde.kwin.Effects reconfigureEffect s "$KWIN_EFFECT_ID" >/dev/null 2>&1 \
+  || busctl --user call org.kde.KWin /Effects org.kde.kwin.Effects loadEffect s "$KWIN_EFFECT_ID" >/dev/null 2>&1 || true
 echo "snapshot-kwin installed. Bind a shortcut to: $TRIGGER"

@@ -1,0 +1,14 @@
+{
+    "KPlugin": {
+        "Id": "snapshot-kwin-noanim",
+        "Name": "snapshot-kwin: no open/close animation",
+        "Description": "Shows snapshot-kwin's capture overlay and clipboard picker instantly, without the window open/close animation",
+        "Category": "Appearance",
+        "License": "MIT",
+        "Version": "0.1",
+        "EnabledByDefault": true
+    },
+    "X-Plasma-API": "javascript",
+    "X-Plasma-API-Minimum-Version": "6.0",
+    "KPackageStructure": "KWin/Effect"
+}

@@ -33,6 +33,9 @@ costs one KWin grab and one frame.
 - **Click-to-capture**: a tiny KWin script pushes visible window geometry to the
   daemon whenever windows change, so a click resolves the window instantly.
 - **UI**: Python + GTK4 + cairo, all from the distro; nothing to pip-install.
+- **No animation**: a tiny KWin effect grabs only snapshot-kwin's own windows on
+  open/close, so Plasma's Scale animation skips them (every other window keeps
+  its animation; no global setting is changed).
 
 ## Install (per user, no root)
 
