@@ -21,7 +21,9 @@ PY_COPY="$LIBEXEC/snapshot-kwin-python"
 DESKTOP="$DATA_HOME/applications/$APP_ID.desktop"
 UNIT="$CONFIG_HOME/systemd/user/snapshot-kwin.service"
 TRIGGER="$BIN/snapshot-kwin-capture"
+HISTORY="$BIN/snapshot-kwin-history"
 TERM_PASTE="$BIN/term-paste"
+LAUNCHER="$DATA_HOME/applications/snapshot-kwin.desktop"
 KWIN_SCRIPT_ID=snapshot-kwin-windows
 KWIN_EFFECT_ID=snapshot-kwin-noanim
 
@@ -32,7 +34,7 @@ uninstall() {
   busctl --user call org.kde.KWin /Effects org.kde.kwin.Effects unloadEffect s "$KWIN_EFFECT_ID" >/dev/null 2>&1 || true
   kpackagetool6 --type KWin/Effect -r "$KWIN_EFFECT_ID" >/dev/null 2>&1 || true
   kwriteconfig6 --file kwinrc --group Plugins --key "${KWIN_EFFECT_ID}Enabled" --delete 2>/dev/null || true
-  rm -f -- "$UNIT" "$DESKTOP" "$TRIGGER" "$TERM_PASTE"
+  rm -f -- "$UNIT" "$DESKTOP" "$TRIGGER" "$HISTORY" "$TERM_PASTE" "$LAUNCHER"
   rm -rf -- "$LIBEXEC"
   systemctl --user daemon-reload
   echo "snapshot-kwin removed (history in \${XDG_STATE_HOME:-~/.local/state}/snapshot-kwin kept)"
@@ -108,6 +110,33 @@ cat > "$TRIGGER" <<EOF
 exec busctl --user call $APP_ID /io/github/geojol/SnapshotKwin $APP_ID Capture
 EOF
 chmod 0755 "$TRIGGER"
+printf '%s\n' '#!/bin/sh' 'exec busctl --user call io.github.geojol.SnapshotKwin /io/github/geojol/SnapshotKwin io.github.geojol.SnapshotKwin ShowHistory' > "$HISTORY"
+chmod 0755 "$HISTORY"
+
+# visible launcher: find it in the app menu / KRunner ("snapshot" or "截图");
+# right-click actions open the history and turn the daemon on and off
+cat > "$LAUNCHER" <<EOF
+[Desktop Entry]
+Type=Application
+Name=snapshot-kwin 截图
+Comment=Meta+Alt+1 截图 · Meta+Shift+V 剪贴板历史
+Exec=$TRIGGER
+Icon=applets-screenshooter
+Keywords=screenshot;snapshot;clipboard;截图;剪贴板;
+Actions=History;Start;Stop;
+
+[Desktop Action History]
+Name=剪贴板历史
+Exec=$BIN/snapshot-kwin-history
+
+[Desktop Action Start]
+Name=开启(常驻服务)
+Exec=systemctl --user enable --now snapshot-kwin.service
+
+[Desktop Action Stop]
+Name=关闭(停止并取消开机启动)
+Exec=systemctl --user disable --now snapshot-kwin.service
+EOF
 
 # terminal paste helper (bind Meta+V in the terminal to it, e.g. via xremap)
 ln -sfn "$SRC/tools/term-paste" "$TERM_PASTE"

@@ -59,6 +59,15 @@ Retention defaults to half a year and 5 GiB of images; override in
 {"max_age_days": 183, "max_bytes": 5368709120}
 ```
 
+## Find it, turn it on/off
+
+- App menu / KRunner: search **snapshot** or **截图** (`snapshot-kwin.desktop`).
+  Right-click it for 剪贴板历史 / 开启 / 关闭.
+- Shortcuts: Meta+Alt+1 capture, Meta+Shift+V clipboard history.
+- It is a user service: `systemctl --user status|start|stop snapshot-kwin`;
+  `disable --now` turns it off for good, `enable --now` brings it back.
+- Logs: `journalctl --user -u snapshot-kwin`. Source: this repo; `./install.sh` rewires everything.
+
 ## Clipboard history: paste and drag
 
 Open the history (bind a shortcut to `~/.local/bin/snapshot-kwin-history`).
