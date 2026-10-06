@@ -363,8 +363,6 @@ class Editor(Gtk.Window):
         self.fixed.set_can_target(False)
         self.overlay.add_overlay(self.fixed)
         root.append(self.overlay)
-        self.status = Gtk.Label(xalign=0, margin_start=10, margin_end=10, margin_top=4, margin_bottom=6)
-        root.append(self.status)
         self.set_child(root)
         self.set_color(self.color)
 
@@ -476,10 +474,7 @@ class Editor(Gtk.Window):
         self.area.queue_draw()
 
     def _update_status(self):
-        name = next(lbl for t, lbl, _k in TOOLS if t == self.tool)
-        cname = next(n for n, c in COLORS if c == self.color)
-        extra = "拖边角调整,框内拖动移动,切换工具或回车生效" if self.tool == "crop" else "拖已有标注可移动,Delete 删除选中"
-        self.status.set_text(f"{name} · {cname} · 线宽 {self.width}    {extra} · 回车 完成 · Esc 放弃 · Ctrl/Meta+Z 撤销")
+        pass  # no status line: tools explain themselves via 1 s hover tips
 
     # ── open / close ─────────────────────────────────────────
     def open_png(self, path):

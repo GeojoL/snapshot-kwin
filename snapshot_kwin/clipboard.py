@@ -179,9 +179,6 @@ class Picker(Gtk.Window):
         scroller = Gtk.ScrolledWindow(vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER)
         scroller.set_child(self.listbox)
         box.append(scroller)
-        hint = Gtk.Label(label="回车 粘贴   ·   双击图片 编辑   ·   Esc 关闭", xalign=0)
-        hint.add_css_class("hint")
-        box.append(hint)
         self.set_child(box)
 
         keys = Gtk.EventControllerKey()
