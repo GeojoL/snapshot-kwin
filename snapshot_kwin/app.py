@@ -49,6 +49,7 @@ DBUS_XML = f"""
     <method name="TestHideHistory"/>
     <method name="TestEditLatest"/>
     <method name="TestEditorArrowAndFinish"/>
+    <method name="TestEditorTool"><arg type="s" name="tool"/></method>
     <!-- test hooks: drive the overlay without moving the user's pointer -->
     <method name="TestSelect"><arg type="i" name="x"/><arg type="i" name="y"/><arg type="i" name="w"/><arg type="i" name="h"/></method>
     <method name="TestClick"><arg type="i" name="x"/><arg type="i" name="y"/></method>
@@ -302,6 +303,10 @@ class App(Gtk.Application):
             img = next((i for i in self.history.items if i["kind"] == "image"), None)
             if img:
                 GLib.idle_add(lambda: self._edit_image(img) or False)
+        elif method == "TestEditorTool":
+            invocation.return_value(None)
+            tool = params.unpack()[0]
+            GLib.idle_add(lambda: self.editor.set_tool(tool) or False)
         elif method == "TestEditorArrowAndFinish":
             invocation.return_value(None)
 

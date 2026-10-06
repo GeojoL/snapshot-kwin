@@ -27,12 +27,13 @@ COLORS = [
     ("蓝", (0.54, 0.71, 0.98)), ("白", (1.0, 1.0, 1.0)), ("黑", (0.07, 0.07, 0.11)),
 ]
 TOOLS = [  # (id, label, key)
-    ("pen", "画笔", "p"), ("highlight", "荧光笔", "h"), ("line", "直线", "l"), ("arrow", "箭头", "a"),
+    ("select", "选择/移动", "v"), ("pen", "画笔", "p"), ("highlight", "荧光笔", "h"), ("line", "直线", "l"), ("arrow", "箭头", "a"),
     ("rect", "矩形", "r"), ("ellipse", "椭圆", "e"), ("text", "文字", "t"), ("number", "编号", "n"),
     ("mosaic", "马赛克", "m"), ("eraser", "橡皮", "x"), ("crop", "裁剪", "c"),
 ]
 # icon names, first available wins (Breeze names first, generic fallbacks after)
 ICONS = {
+    "select": ["edit-select", "transform-move", "input-mouse-symbolic"],
     "pen": ["draw-freehand", "draw-brush", "document-edit-symbolic"],
     "highlight": ["draw-highlight", "draw-brush", "format-text-highlight"],
     "line": ["draw-line", "list-remove-symbolic"],
@@ -50,6 +51,9 @@ ICONS = {
     "flipv": ["object-flip-vertical", "object-flip-vertical-symbolic"],
     "done": ["dialog-ok-apply", "object-select-symbolic"],
 }
+CROP_RATIOS = [("自由", None), ("1:1", 1.0), ("4:3", 4 / 3), ("3:4", 3 / 4),
+               ("16:9", 16 / 9), ("9:16", 9 / 16), ("3:2", 3 / 2)]
+HANDLE_PX = 10  # crop handle half-size in screen px
 HOVER_MS = 1000  # tooltips appear only after hovering this long
 
 
@@ -86,7 +90,7 @@ def hover_tip(widget, text):
     click = Gtk.GestureClick()
     click.connect("pressed", lambda *_: cancel())
     widget.add_controller(click)
-DRAG_TOOLS = {"line", "arrow", "rect", "ellipse", "mosaic", "crop"}
+DRAG_TOOLS = {"line", "arrow", "rect", "ellipse", "mosaic"}
 
 
 # ── rendering (shared by the canvas and the export) ─────────────────────────
@@ -224,12 +228,71 @@ def _bbox(obj):
         return x - pad, y - pad, w + 2 * pad, h + 2 * pad
     if k == "text":
         x, y = obj["pos"]
-        return x, y, obj["size"] * 0.6 * max(1, len(obj["text"])), obj["size"] * 1.4
+        w, h = obj.get("w"), obj.get("h")
+        if w is None:
+            w, h = text_size(obj)
+        return x, y, w, h
     if k == "number":
         x, y = obj["pos"]
         r = obj["radius"]
         return x - r, y - r, 2 * r, 2 * r
     return 0, 0, 0, 0
+
+
+def _seg_dist(p, a, b):
+    (px, py), (ax, ay), (bx, by) = p, a, b
+    dx, dy = bx - ax, by - ay
+    L = dx * dx + dy * dy
+    t = 0 if L == 0 else max(0, min(1, ((px - ax) * dx + (py - ay) * dy) / L))
+    return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+
+
+def hit(obj, p, tol):
+    """True if image point p touches obj (strokes/outlines by distance, solids by area)."""
+    k = obj["kind"]
+    t = tol + obj.get("width", 0) / 2
+    if k in ("pen", "highlight"):
+        pts = obj["points"]
+        t += obj["width"] if k == "highlight" else 0
+        return any(_seg_dist(p, pts[i], pts[i + 1]) <= t for i in range(len(pts) - 1))
+    if k in ("line", "arrow"):
+        return _seg_dist(p, obj["p1"], obj["p2"]) <= t + (6 if k == "arrow" else 0)
+    if k == "rect":
+        x, y, w, h = _norm(obj["p1"], obj["p2"])
+        inside_outer = x - t <= p[0] <= x + w + t and y - t <= p[1] <= y + h + t
+        inside_inner = x + t < p[0] < x + w - t and y + t < p[1] < y + h - t
+        return inside_outer and not inside_inner
+    if k == "ellipse":
+        x, y, w, h = _norm(obj["p1"], obj["p2"])
+        a, b = w / 2, h / 2
+        if a < 1 or b < 1:
+            return False
+        r = math.hypot((p[0] - x - a) / a, (p[1] - y - b) / b)
+        return abs(r - 1) <= t / min(a, b)
+    if k == "number":
+        return math.hypot(p[0] - obj["pos"][0], p[1] - obj["pos"][1]) <= obj["radius"] + tol
+    x, y, w, h = _bbox(obj)  # text, mosaic
+    return x - tol <= p[0] <= x + w + tol and y - tol <= p[1] <= y + h + tol
+
+
+def translate(obj, dx, dy):
+    k = obj["kind"]
+    if k in ("pen", "highlight"):
+        obj["points"] = [(x + dx, y + dy) for x, y in obj["points"]]
+    elif "p1" in obj:
+        obj["p1"] = (obj["p1"][0] + dx, obj["p1"][1] + dy)
+        obj["p2"] = (obj["p2"][0] + dx, obj["p2"][1] + dy)
+    else:
+        obj["pos"] = (obj["pos"][0] + dx, obj["pos"][1] + dy)
+
+
+def text_size(obj):
+    """Measured (w, h) of a text object in image px."""
+    tmp = cairo.ImageSurface(cairo.FORMAT_ARGB32, 1, 1)
+    layout = PangoCairo.create_layout(cairo.Context(tmp))
+    layout.set_font_description(Pango.FontDescription.from_string(f"Sans Bold {obj['size']}px"))
+    layout.set_text(obj["text"], -1)
+    return layout.get_pixel_size()
 
 
 def render(base, objects, crop=None):
@@ -276,42 +339,45 @@ class Editor(Gtk.Window):
         self.on_done = on_done
         self.base = None
         self.objects = []
-        self.crop = None
+        self.crop = None          # applied crop (x, y, w, h) in image px
+        self.crop_edit = None     # pending crop rect while the crop tool is active
+        self.crop_ratio = None
         self.undo_stack, self.redo_stack = [], []
         self.tool = "arrow"
         self.color = COLORS[0][1]
         self.width = 4
         self.next_number = 1
-        self.current = None      # object being drawn
-        self.drag_from = None    # image coords
-        self.view = (1.0, 0.0, 0.0)  # scale, offset x, offset y (widget = img*scale + off)
+        self.current = None       # object being drawn
+        self.selected = None      # object shown with a dashed box (move / Delete)
+        self.drag = None          # active drag: dict(mode=..., ...)
+        self.view = (1.0, 0.0, 0.0)
+        self.text_entry = None
 
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         root.append(self._build_toolbar())
         self.overlay = Gtk.Overlay()
-        self.area = Gtk.DrawingArea(hexpand=True, vexpand=True)
+        self.area = Gtk.DrawingArea(hexpand=True, vexpand=True, focusable=True)
         self.area.set_draw_func(self._draw)
         self.overlay.set_child(self.area)
-        self.fixed = Gtk.Fixed(can_target=True)
-        self.overlay.add_overlay(self.fixed)
+        self.fixed = Gtk.Fixed()
         self.fixed.set_can_target(False)
+        self.overlay.add_overlay(self.fixed)
         root.append(self.overlay)
         self.status = Gtk.Label(xalign=0, margin_start=10, margin_end=10, margin_top=4, margin_bottom=6)
         root.append(self.status)
         self.set_child(root)
         self.set_color(self.color)
 
-        drag = Gtk.GestureDrag()
-        drag.connect("drag-begin", self._on_begin)
-        drag.connect("drag-update", self._on_update)
-        drag.connect("drag-end", self._on_end)
-        self.area.add_controller(drag)
+        g = Gtk.GestureDrag()
+        g.connect("drag-begin", self._on_begin)
+        g.connect("drag-update", self._on_update)
+        g.connect("drag-end", self._on_end)
+        self.area.add_controller(g)
         keys = Gtk.EventControllerKey()
         keys.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
         keys.connect("key-pressed", self._on_key)
         self.add_controller(keys)
         self.connect("close-request", self._on_close_request)
-        self.text_entry = None
 
     # ── toolbar ──────────────────────────────────────────────
     def _build_toolbar(self):
@@ -327,6 +393,12 @@ class Editor(Gtk.Window):
             b.connect("toggled", lambda btn, t=tid: btn.get_active() and self.set_tool(t))
             self.tool_buttons[tid] = b
             bar.append(b)
+        # crop ratio picker, visible only with the crop tool
+        self.ratio_box = Gtk.DropDown.new_from_strings([n for n, _r in CROP_RATIOS])
+        self.ratio_box.connect("notify::selected", self._on_ratio)
+        hover_tip(self.ratio_box, "裁剪比例")
+        self.ratio_box.set_visible(False)
+        bar.append(self.ratio_box)
         bar.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
         self.color_buttons = {}
         css = []
@@ -337,8 +409,8 @@ class Editor(Gtk.Window):
             b.set_size_request(30, 30)
             b.connect("clicked", lambda _b, c=rgb: self.set_color(c))
             self.color_buttons[rgb] = b
-            r, g, bl = (int(v * 255) for v in rgb)
-            css.append(f".skw-swatch-{i} {{ background: rgb({r},{g},{bl}); min-width: 26px; border-radius: 13px; }}")
+            r, gg, bl = (int(v * 255) for v in rgb)
+            css.append(f".skw-swatch-{i} {{ background: rgb({r},{gg},{bl}); min-width: 26px; border-radius: 13px; }}")
             bar.append(b)
         css.append(".skw-swatch-on { outline: 3px solid #cdd6f4; outline-offset: 2px; }")
         provider = Gtk.CssProvider()
@@ -348,7 +420,7 @@ class Editor(Gtk.Window):
         bar.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
         self.width_spin = Gtk.SpinButton.new_with_range(1, 40, 1)
         self.width_spin.set_value(self.width)
-        self.width_spin.connect("value-changed", lambda s: setattr(self, "width", int(s.get_value())))
+        self.width_spin.connect("value-changed", lambda sp: self._set_width(int(sp.get_value())))
         hover_tip(self.width_spin, "线宽")
         bar.append(self.width_spin)
         bar.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
@@ -357,8 +429,7 @@ class Editor(Gtk.Window):
             hover_tip(b, tip)
             b.connect("clicked", lambda _b, o=op: self.transform(o))
             bar.append(b)
-        spacer = Gtk.Box(hexpand=True)
-        bar.append(spacer)
+        bar.append(Gtk.Box(hexpand=True))
         done = Gtk.Button(icon_name=_icon("done"))
         hover_tip(done, "完成:放进剪贴板  ⏎")
         done.add_css_class("suggested-action")
@@ -368,49 +439,77 @@ class Editor(Gtk.Window):
 
     def set_tool(self, tool):
         self._commit_text()
+        if self.tool == "crop" and tool != "crop":
+            self._apply_crop()
         self.tool = tool
+        if tool == "crop" and self.base is not None and self.crop_edit is None:
+            self.crop_edit = self.crop or (0, 0, self.base.get_width(), self.base.get_height())
+        self.ratio_box.set_visible(tool == "crop")
         if not self.tool_buttons[tool].get_active():
             self.tool_buttons[tool].set_active(True)
         self._update_status()
+        self.area.queue_draw()
 
     def set_color(self, rgb):
         self.color = rgb
-        for c, b in getattr(self, "color_buttons", {}).items():
+        for c, b in self.color_buttons.items():
             (b.add_css_class if c == rgb else b.remove_css_class)("skw-swatch-on")
+        if self.selected is not None and "color" in self.selected and self.selected["kind"] != "mosaic":
+            self._push_undo()
+            self.selected["color"] = rgb
+            self.area.queue_draw()
         self._update_status()
+
+    def _set_width(self, w):
+        self.width = w
+        if self.selected is not None and "width" in self.selected:
+            self._push_undo()
+            self.selected["width"] = w
+            self.area.queue_draw()
+        self._update_status()
+
+    def _on_ratio(self, dd, _pspec):
+        self.crop_ratio = CROP_RATIOS[dd.get_selected()][1]
+        if self.crop_edit and self.crop_ratio:
+            x, y, w, h = self.crop_edit
+            self.crop_edit = self._fit_ratio(x, y, w, h, anchor="center")
+        self.area.queue_draw()
 
     def _update_status(self):
         name = next(lbl for t, lbl, _k in TOOLS if t == self.tool)
         cname = next(n for n, c in COLORS if c == self.color)
-        self.status.set_text(f"{name} · {cname} · 线宽 {self.width}    回车 完成并放进剪贴板 · Esc 放弃 · Ctrl/Meta+Z 撤销")
+        extra = "拖边角调整,框内拖动移动,切换工具或回车生效" if self.tool == "crop" else "拖已有标注可移动,Delete 删除选中"
+        self.status.set_text(f"{name} · {cname} · 线宽 {self.width}    {extra} · 回车 完成 · Esc 放弃 · Ctrl/Meta+Z 撤销")
 
     # ── open / close ─────────────────────────────────────────
     def open_png(self, path):
-        surf = cairo.ImageSurface.create_from_png(str(path))
-        self.base = surf
-        self.objects, self.crop = [], None
+        self.base = cairo.ImageSurface.create_from_png(str(path))
+        self.objects, self.crop, self.crop_edit = [], None, None
         self.undo_stack, self.redo_stack = [], []
         self.next_number = 1
-        self.current = None
+        self.current = self.selected = self.drag = None
         self._discard_text()
-        self.set_tool(self.tool)
+        self.set_tool("arrow" if self.tool == "crop" else self.tool)
         self.present()
+        self.area.grab_focus()
         self.area.queue_draw()
 
     def _on_close_request(self, *_):
         self._discard_text()
         self.set_visible(False)
-        return True  # keep the window for the next open
+        return True
 
     def finish(self):
         self._commit_text()
+        if self.tool == "crop":
+            self._apply_crop()
         if self.base is None:
             return
         out = render(self.base, self.objects, self.crop)
-        self.on_done(out, self)  # sets the clipboard while we still have focus
+        self.on_done(out, self)
         self.set_visible(False)
 
-    # ── history ──────────────────────────────────────────────
+    # ── undo ─────────────────────────────────────────────────
     def _snapshot(self):
         return (self.base, copy.deepcopy(self.objects), self.crop, self.next_number)
 
@@ -418,44 +517,128 @@ class Editor(Gtk.Window):
         self.undo_stack.append(self._snapshot())
         self.redo_stack.clear()
 
+    def _restore(self, snap):
+        self.base, self.objects, self.crop, self.next_number = snap
+        self.selected = None
+        self.crop_edit = self.crop if self.tool == "crop" else None
+        self.area.queue_draw()
+
     def undo(self):
         if self.undo_stack:
             self.redo_stack.append(self._snapshot())
-            self.base, self.objects, self.crop, self.next_number = self.undo_stack.pop()
-            self.area.queue_draw()
+            self._restore(self.undo_stack.pop())
 
     def redo(self):
         if self.redo_stack:
             self.undo_stack.append(self._snapshot())
-            self.base, self.objects, self.crop, self.next_number = self.redo_stack.pop()
-            self.area.queue_draw()
+            self._restore(self.redo_stack.pop())
 
     def transform(self, op):
         self._commit_text()
         if self.base is None:
             return
         self._push_undo()
-        # flatten annotations first so they rotate with the image
         flat = render(self.base, self.objects, self.crop)
         self.base = _transform(flat, op)
-        self.objects, self.crop = [], None
+        self.objects, self.crop, self.selected = [], None, None
+        self.crop_edit = (0, 0, self.base.get_width(), self.base.get_height()) if self.tool == "crop" else None
         self.area.queue_draw()
+
+    # ── crop ─────────────────────────────────────────────────
+    def _apply_crop(self):
+        if self.crop_edit is None or self.base is None:
+            return
+        full = (0, 0, self.base.get_width(), self.base.get_height())
+        new = tuple(int(round(v)) for v in self.crop_edit)
+        self.crop_edit = None
+        if new != (self.crop or full) and new[2] >= 4 and new[3] >= 4:
+            self._push_undo()
+            self.crop = None if new == full else new
+
+    def _fit_ratio(self, x, y, w, h, anchor):
+        r = self.crop_ratio
+        if not r:
+            return (x, y, w, h)
+        bw, bh = self.base.get_width(), self.base.get_height()
+        if w / max(h, 1) > r:
+            nw, nh = h * r, h
+        else:
+            nw, nh = w, w / r
+        nw, nh = min(nw, bw), min(nh, bh)
+        if anchor == "center":
+            cx, cy = x + w / 2, y + h / 2
+            x, y = cx - nw / 2, cy - nh / 2
+        x, y = max(0, min(x, bw - nw)), max(0, min(y, bh - nh))
+        return (x, y, nw, nh)
+
+    def _crop_handle_at(self, wx, wy):
+        if self.crop_edit is None:
+            return None
+        s, ox, oy = self.view
+        x, y, w, h = self.crop_edit
+        X, Y, W, H = x * s + ox, y * s + oy, w * s, h * s
+        pts = {"nw": (X, Y), "n": (X + W / 2, Y), "ne": (X + W, Y), "e": (X + W, Y + H / 2),
+               "se": (X + W, Y + H), "s": (X + W / 2, Y + H), "sw": (X, Y + H), "w": (X, Y + H / 2)}
+        for name, (hx, hy) in pts.items():
+            if abs(wx - hx) <= HANDLE_PX + 2 and abs(wy - hy) <= HANDLE_PX + 2:
+                return name
+        if X < wx < X + W and Y < wy < Y + H:
+            return "move"
+        return None
+
+    def _crop_drag(self, d, dx, dy):
+        bw, bh = self.base.get_width(), self.base.get_height()
+        x, y, w, h = d["start"]
+        mode = d["mode"]
+        if mode == "move":
+            nx = max(0, min(bw - w, x + dx))
+            ny = max(0, min(bh - h, y + dy))
+            self.crop_edit = (nx, ny, w, h)
+            return
+        if mode == "new":
+            ax, ay = d["anchor"]
+            bx, by = max(0, min(bw, ax + dx)), max(0, min(bh, ay + dy))
+            x0, y0, x1, y1 = min(ax, bx), min(ay, by), max(ax, bx), max(ay, by)
+        else:
+            x0, y0, x1, y1 = x, y, x + w, y + h
+            if "w" in mode:
+                x0 = max(0, min(x1 - 8, x0 + dx))
+            if "e" in mode:
+                x1 = min(bw, max(x0 + 8, x1 + dx))
+            if "n" in mode:
+                y0 = max(0, min(y1 - 8, y0 + dy))
+            if "s" in mode:
+                y1 = min(bh, max(y0 + 8, y1 + dy))
+        nw, nh = x1 - x0, y1 - y0
+        r = self.crop_ratio
+        if r:
+            # keep the dragged corner/edge under the pointer, adapt the other side
+            if mode in ("n", "s"):
+                nw = nh * r
+            elif mode in ("e", "w"):
+                nh = nw / r
+            elif nw / max(nh, 1) > r:
+                nh = nw / r
+            else:
+                nw = nh * r
+            if "w" in mode or (mode == "new" and x0 < d["anchor"][0]):
+                x0 = x1 - nw
+            if "n" in mode or (mode == "new" and y0 < d["anchor"][1]):
+                y0 = y1 - nh
+            nw, nh = min(nw, bw), min(nh, bh)
+            x0, y0 = max(0, min(x0, bw - nw)), max(0, min(y0, bh - nh))
+        self.crop_edit = (x0, y0, nw, nh)
 
     # ── coordinates ──────────────────────────────────────────
     def _layout_view(self, width, height):
-        bw, bh = self._visible_size()
-        scale = min(1.0, (width - 40) / bw, (height - 40) / bh) if bw and bh else 1.0
-        ox = (width - bw * scale) / 2
-        oy = (height - bh * scale) / 2
-        cx, cy = (self.crop[0], self.crop[1]) if self.crop else (0, 0)
-        self.view = (scale, ox - cx * scale, oy - cy * scale)
-
-    def _visible_size(self):
-        if self.base is None:
-            return 0, 0
-        if self.crop:
-            return self.crop[2], self.crop[3]
-        return self.base.get_width(), self.base.get_height()
+        if self.tool == "crop" or self.crop is None:
+            vx, vy, vw, vh = 0, 0, self.base.get_width(), self.base.get_height()
+        else:
+            vx, vy, vw, vh = self.crop
+        scale = min(1.0, (width - 40) / vw, (height - 40) / vh)
+        ox = (width - vw * scale) / 2 - vx * scale
+        oy = (height - vh * scale) / 2 - vy * scale
+        self.view = (scale, ox, oy)
 
     def _to_img(self, x, y):
         s, ox, oy = self.view
@@ -472,30 +655,104 @@ class Editor(Gtk.Window):
         cr.save()
         cr.translate(ox, oy)
         cr.scale(s, s)
-        if self.crop:
+        if self.crop and self.tool != "crop":
             cr.rectangle(*self.crop)
             cr.clip()
         cr.set_source_surface(self.base, 0, 0)
         cr.paint()
-        for o in self.objects + ([self.current] if self.current and self.current["kind"] != "crop" else []):
+        for o in self.objects + ([self.current] if self.current else []):
             draw_object(cr, o, self.base)
         cr.restore()
-        if self.current and self.current["kind"] == "crop":
-            x, y, w, h = _norm(self.current["p1"], self.current["p2"])
-            cr.set_source_rgba(0.54, 0.71, 0.98, 1)
-            cr.set_line_width(2)
-            cr.set_dash([6, 4])
+        if self.selected is not None and self.selected in self.objects:
+            x, y, w, h = _bbox(self.selected)
+            cr.set_source_rgba(0.80, 0.84, 0.96, 0.9)
+            cr.set_line_width(1)
+            cr.set_dash([4, 3])
             cr.rectangle(x * s + ox, y * s + oy, w * s, h * s)
             cr.stroke()
+            cr.set_dash([])
+        if self.tool == "crop" and self.crop_edit:
+            x, y, w, h = self.crop_edit
+            X, Y, W, H = x * s + ox, y * s + oy, w * s, h * s
+            bw, bh = self.base.get_width() * s, self.base.get_height() * s
+            cr.set_source_rgba(0, 0, 0, 0.5)
+            cr.rectangle(ox, oy, bw, bh)
+            cr.rectangle(X + W, Y, -W, H)
+            cr.set_fill_rule(cairo.FILL_RULE_EVEN_ODD)
+            cr.fill()
+            cr.set_fill_rule(cairo.FILL_RULE_WINDING)
+            cr.set_source_rgba(0.54, 0.71, 0.98, 1)
+            cr.set_line_width(2)
+            cr.rectangle(X, Y, W, H)
+            cr.stroke()
+            cr.set_source_rgba(1, 1, 1, 0.35)  # rule-of-thirds guides
+            cr.set_line_width(1)
+            for i in (1, 2):
+                cr.move_to(X + W * i / 3, Y)
+                cr.line_to(X + W * i / 3, Y + H)
+                cr.move_to(X, Y + H * i / 3)
+                cr.line_to(X + W, Y + H * i / 3)
+            cr.stroke()
+            cr.set_source_rgba(0.54, 0.71, 0.98, 1)
+            for hx, hy in ((X, Y), (X + W / 2, Y), (X + W, Y), (X + W, Y + H / 2),
+                           (X + W, Y + H), (X + W / 2, Y + H), (X, Y + H), (X, Y + H / 2)):
+                cr.rectangle(hx - HANDLE_PX / 2, hy - HANDLE_PX / 2, HANDLE_PX, HANDLE_PX)
+            cr.fill()
+            label = f"{round(w)} × {round(h)}"
+            layout = PangoCairo.create_layout(cr)
+            layout.set_font_description(Pango.FontDescription.from_string("Sans Bold 10"))
+            layout.set_text(label, -1)
+            cr.set_source_rgba(0.07, 0.07, 0.11, 0.85)
+            tw, th = layout.get_pixel_size()
+            cr.rectangle(X + 4, Y + 4, tw + 10, th + 6)
+            cr.fill()
+            cr.set_source_rgba(0.80, 0.84, 0.96, 1)
+            cr.move_to(X + 9, Y + 7)
+            PangoCairo.show_layout(cr, layout)
 
     # ── input ────────────────────────────────────────────────
+    def _object_at(self, ix, iy):
+        tol = 6 / self.view[0]
+        for o in reversed(self.objects):
+            if hit(o, (ix, iy), tol):
+                return o
+        return None
+
     def _on_begin(self, _g, x, y):
         if self.base is None:
             return
+        self.area.grab_focus()
         self._commit_text()
         ix, iy = self._to_img(x, y)
-        self.drag_from = (ix, iy)
         t = self.tool
+        if t == "crop":
+            h = self._crop_handle_at(x, y)
+            if h is None:
+                self.drag = {"mode": "new", "start": self.crop_edit, "anchor": (ix, iy)}
+            else:
+                self.drag = {"mode": h, "start": self.crop_edit}
+            return
+        if t == "eraser":
+            o = self._object_at(ix, iy)
+            if o is not None:
+                self._push_undo()
+                self.objects.remove(o)
+                self.selected = None
+            self.area.queue_draw()
+            return
+        # any other tool: grabbing an existing annotation moves it
+        o = self._object_at(ix, iy)
+        if o is not None:
+            self._push_undo()
+            self.selected = o
+            self.drag = {"mode": "object", "obj": o, "last": (0.0, 0.0)}
+            self.area.queue_draw()
+            return
+        self.selected = None
+        if t == "select":
+            self.area.queue_draw()
+            return
+        self.drag = {"mode": "draw", "from": (ix, iy)}
         if t in ("pen", "highlight"):
             self.current = {"kind": t, "points": [(ix, iy)], "color": self.color, "width": self.width}
         elif t in DRAG_TOOLS:
@@ -503,60 +760,57 @@ class Editor(Gtk.Window):
                             "width": self.width, "block": max(8, self.width * 3)}
         elif t == "number":
             self._push_undo()
-            self.objects.append({"kind": "number", "pos": (ix, iy), "n": self.next_number,
-                                 "color": self.color, "radius": max(14, self.width * 4)})
+            o = {"kind": "number", "pos": (ix, iy), "n": self.next_number,
+                 "color": self.color, "radius": max(14, self.width * 4)}
+            self.objects.append(o)
+            self.selected = o
             self.next_number += 1
+            self.drag = None
         elif t == "text":
             self._start_text(x, y, ix, iy)
-        elif t == "eraser":
-            self._erase_at(ix, iy)
+            self.drag = None
         self.area.queue_draw()
 
     def _on_update(self, _g, dx, dy):
-        if self.current is None or self.drag_from is None:
+        d = self.drag
+        if d is None:
             return
         s = self.view[0]
-        ix, iy = self.drag_from[0] + dx / s, self.drag_from[1] + dy / s
-        if self.current["kind"] in ("pen", "highlight"):
-            self.current["points"].append((ix, iy))
-        else:
-            self.current["p2"] = (ix, iy)
+        idx, idy = dx / s, dy / s
+        if d["mode"] == "object":
+            lx, ly = d["last"]
+            translate(d["obj"], idx - lx, idy - ly)
+            d["last"] = (idx, idy)
+        elif d["mode"] == "draw" and self.current is not None:
+            fx, fy = d["from"]
+            if self.current["kind"] in ("pen", "highlight"):
+                self.current["points"].append((fx + idx, fy + idy))
+            else:
+                self.current["p2"] = (fx + idx, fy + idy)
+        elif self.tool == "crop" and d.get("start") is not None:
+            self._crop_drag(d, idx, idy)
         self.area.queue_draw()
 
-    def _on_end(self, _g, _dx, _dy):
+    def _on_end(self, _g, dx, dy):
+        d, self.drag = self.drag, None
         cur, self.current = self.current, None
-        self.drag_from = None
-        if cur is None:
+        if d is None:
             return
-        if cur["kind"] == "crop":
-            x, y, w, h = _norm(cur["p1"], cur["p2"])
-            bw, bh = self.base.get_width(), self.base.get_height()
-            x, y = max(0, x), max(0, y)
-            w, h = min(bw - x, w), min(bh - y, h)
-            if w >= 4 and h >= 4:
+        if d["mode"] == "object":
+            if abs(dx) < 2 and abs(dy) < 2 and self.undo_stack:
+                self.undo_stack.pop()  # a plain click only selects; no undo entry
+        elif d["mode"] == "draw" and cur is not None:
+            ok = len(cur.get("points", [])) >= 2 if cur["kind"] in ("pen", "highlight") else cur["p1"] != cur["p2"]
+            if ok:
                 self._push_undo()
-                self.crop = (int(x), int(y), int(w), int(h))
-        else:
-            if cur["kind"] in ("pen", "highlight") and len(cur["points"]) < 2:
-                return
-            if "p1" in cur and cur["p1"] == cur["p2"]:
-                return
-            self._push_undo()
-            self.objects.append(cur)
+                self.objects.append(cur)
+                self.selected = cur
         self.area.queue_draw()
-
-    def _erase_at(self, ix, iy):
-        for i in range(len(self.objects) - 1, -1, -1):
-            x, y, w, h = _bbox(self.objects[i])
-            if x <= ix <= x + w and y <= iy <= y + h:
-                self._push_undo()
-                del self.objects[i]
-                return
 
     # text: a small entry floats over the canvas; Enter/click elsewhere commits
     def _start_text(self, wx, wy, ix, iy):
         self._discard_text()
-        entry = Gtk.Entry(width_chars=24, placeholder_text="输入文字，回车确定")
+        entry = Gtk.Entry(width_chars=24, placeholder_text="输入文字,回车确定")
         entry.img_pos = (ix, iy)
         entry.connect("activate", lambda *_: self._commit_text())
         self.fixed.set_can_target(True)
@@ -571,8 +825,11 @@ class Editor(Gtk.Window):
         text = e.get_text().strip()
         if text:
             self._push_undo()
-            self.objects.append({"kind": "text", "pos": e.img_pos, "text": text,
-                                 "color": self.color, "size": max(18, self.width * 5)})
+            o = {"kind": "text", "pos": e.img_pos, "text": text, "color": self.color,
+                 "size": max(18, self.width * 5)}
+            o["w"], o["h"] = text_size(o)
+            self.objects.append(o)
+            self.selected = o
         self._discard_text()
         self.area.queue_draw()
 
@@ -590,14 +847,24 @@ class Editor(Gtk.Window):
             if keyval == Gdk.KEY_Escape:
                 self._discard_text()
                 return True
-            return False  # typing goes to the entry; its Enter commits the text
+            return False
         if ctrl and keyval in (Gdk.KEY_z, Gdk.KEY_Z):
             self.redo() if shift else self.undo()
+            return True
+        if keyval in (Gdk.KEY_Delete, Gdk.KEY_BackSpace) and self.selected in self.objects:
+            self._push_undo()
+            self.objects.remove(self.selected)
+            self.selected = None
+            self.area.queue_draw()
             return True
         if keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
             self.finish()
             return True
         if keyval == Gdk.KEY_Escape:
+            if self.tool == "crop":
+                self.crop_edit = None
+                self.set_tool("select")
+                return True
             self._on_close_request()
             return True
         if not ctrl:
