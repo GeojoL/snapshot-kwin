@@ -357,8 +357,15 @@ class Picker:
         return False
 
     def _on_active_changed(self, win, _pspec):
-        # clicking another window (or anything that takes focus) closes the picker
-        if self.win is win and not win.is_active() and not self._dragging:
+        # clicking another window (or anything that takes focus) closes the picker.
+        # Only a real active -> inactive transition counts: right after present()
+        # KWin may report the new window inactive before activating it, and closing
+        # then made Meta+Shift+V look dead (opened, "focus lost" 0.5 s later).
+        if self.win is not win:
+            return
+        if win.is_active():
+            win._was_active = True
+        elif getattr(win, "_was_active", False) and not self._dragging:
             GLib.idle_add(lambda: self.win is win and self.close_picker("focus lost") or False)
 
     def close_picker(self, reason="closed"):
