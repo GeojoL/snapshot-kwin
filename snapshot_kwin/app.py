@@ -372,7 +372,7 @@ class App(Gtk.Application):
             GLib.idle_add(lambda: self._read_cursor(lambda x, y: _log(f"cursor at {x},{y}")) or False)
         elif method == "TestHideHistory":
             invocation.return_value(None)
-            GLib.idle_add(lambda: self.picker.close_picker() or False)
+            GLib.idle_add(lambda: self.picker.close_picker("test") or False)
         elif method in ("TestSelect", "TestClick"):
             args = params.unpack()
             invocation.return_value(None)
@@ -402,7 +402,8 @@ class App(Gtk.Application):
             self._seed_history()
         self._migrate_legacy_captures()
         self.history.prune()
-        self.picker = Picker(self, self.history, on_paste=self._paste_into_focused, on_edit=self._edit_image)
+        self.picker = Picker(self, self.history, on_paste=self._paste_into_focused, on_edit=self._edit_image,
+                             on_raise=self._activate_window, log=_log)
         self.editor = Editor(self, on_done=self._edit_done)
         self._watch_klipper()
         GLib.idle_add(self.picker.prerender)
@@ -426,20 +427,35 @@ class App(Gtk.Application):
                 cb(None, None)
             return False
         GLib.timeout_add(1000, timeout)
-        js = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "snapshot-kwin-cursor.js"
-        js.write_text(f'callDBus("{APP_ID}", "{OBJECT_PATH}", "{APP_ID}", "ReportCursor", '
-                      "workspace.cursorPos.x, workspace.cursorPos.y);\n")
         try:
-            k = self.capture._bus.get_object("org.kde.KWin", "/Scripting")
-            scripting = dbus_iface(k, "org.kde.kwin.Scripting")
-            scripting.unloadScript("snapshot-kwin-cursor")
-            sid = int(scripting.loadScript(str(js), "snapshot-kwin-cursor", signature="ss"))
-            obj = self.capture._bus.get_object("org.kde.KWin", f"/Scripting/Script{sid}")
-            dbus_iface(obj, "org.kde.kwin.Script").run()
+            self._run_kwin_js("snapshot-kwin-cursor",
+                              f'callDBus("{APP_ID}", "{OBJECT_PATH}", "{APP_ID}", "ReportCursor", '
+                              "workspace.cursorPos.x, workspace.cursorPos.y);\n")
         except Exception as e:  # noqa: BLE001
             _log(f"cursor read failed: {e}")
             self._cursor_cb = None
             cb(None, None)
+
+    def _run_kwin_js(self, name, source):
+        """Run a one-shot KWin script (replacing an earlier run of the same name)."""
+        js = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / f"{name}.js"
+        js.write_text(source)
+        k = self.capture._bus.get_object("org.kde.KWin", "/Scripting")
+        scripting = dbus_iface(k, "org.kde.kwin.Scripting")
+        scripting.unloadScript(name)
+        sid = int(scripting.loadScript(str(js), name, signature="ss"))
+        obj = self.capture._bus.get_object("org.kde.KWin", f"/Scripting/Script{sid}")
+        dbus_iface(obj, "org.kde.kwin.Script").run()
+
+    def _activate_window(self, title):
+        """Bring our window with this caption to the front and give it focus."""
+        try:
+            self._run_kwin_js("snapshot-kwin-activate",
+                              "for (const w of workspace.windowList()) {\n"
+                              f"  if (w.caption === {json.dumps(title)}) {{ workspace.activeWindow = w; break; }}\n"
+                              "}\n")
+        except Exception as e:  # noqa: BLE001
+            _log(f"activate {title} failed: {e}")
 
     def _move_pointer(self, x, y, done):
         def read(cb):
@@ -595,12 +611,12 @@ class App(Gtk.Application):
 
     def show_history(self):
         t0 = time.time() * 1000
-        self.picker.open()
-        _log(f"history shown items={len(self.history.items)} in {time.time() * 1000 - t0:.0f} ms")
+        how = self.picker.open()
+        _log(f"history {how} items={len(self.history.items)} in {time.time() * 1000 - t0:.0f} ms")
         return False
 
     def _paste_into_focused(self, item):
-        # After the picker hides, focus returns to the previous window; send the
+        # After the picker closes, focus returns to the previous window; send the
         # platform paste chord through uinput (Meta+V; a key remapper such as
         # xremap translates it per application, terminals included).
         GLib.timeout_add(180, self._send_paste)

@@ -9,6 +9,10 @@
 - Visible launcher (search 截图 / snapshot) with history / on / off actions;
   `install.sh` now creates every entry it relies on.
 - Clipboard history rows can be dragged out (images as `text/uri-list` + path + `image/png`, text as text). No GdkFileList: its portal transfer fails in Ghostty.
+- Clipboard history window closes (is destroyed) after paste, edit, drag-out, Esc, or
+  a click elsewhere, and is created fresh on every open: a hidden window re-shown
+  by Meta+Shift+V was often not activated. Meta+Shift+V while it is open brings
+  it to the front (KWin activation).
 - `tools/term-paste`: Meta+V in a terminal pastes text or images into the active
   tmux pane (Ctrl+V for Claude Code, a saved PNG path elsewhere); linked by `install.sh`.
 

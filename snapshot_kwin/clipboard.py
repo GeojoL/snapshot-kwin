@@ -8,7 +8,8 @@ timestamp, so text and images share one ordered history.
 
 Picker: Enter pastes into the previously focused window; double-click an image
 to edit it (double-click text pastes it); Shift+Enter also edits; Esc closes;
-typing filters text entries.
+typing filters text entries. Picking, editing, dragging out or clicking another
+window closes (destroys) the picker; opening it while open brings it to the front.
 """
 import hashlib
 import json
@@ -194,14 +195,21 @@ class History:
         return self.dir / item["file"]
 
 
-class Picker(Gtk.Window):
-    def __init__(self, app, history, on_paste, on_edit):
-        super().__init__(application=app, title=PICKER_TITLE, decorated=False,
-                         default_width=760, default_height=560, resizable=False)
+class Picker:
+    """The history list is built once and kept rendered; the window around it is
+    created on open and destroyed on close (Esc, pick, edit, drag-out, or focus
+    moving elsewhere). A re-shown hidden window is not reliably activated by KWin,
+    a new one is, so every open gets a fresh toplevel."""
+
+    def __init__(self, app, history, on_paste, on_edit, on_raise, log=lambda _m: None):
+        self.app = app
+        self.log = log
         self.history = history
         self.on_paste = on_paste
         self.on_edit = on_edit
-        self.add_css_class("snapshot-kwin-picker")
+        self.on_raise = on_raise  # on_raise(title): ask KWin to activate that window
+        self.win = None
+        self._dragging = False
         self._rendered_version = -1
 
         css = Gtk.CssProvider()
@@ -214,10 +222,10 @@ class Picker(Gtk.Window):
         """)
         Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.search = Gtk.SearchEntry(placeholder_text="搜索文字…")
         self.search.connect("search-changed", lambda *_: self._on_search())
-        box.append(self.search)
+        self.box.append(self.search)
         self.listbox = Gtk.ListBox(selection_mode=Gtk.SelectionMode.SINGLE, activate_on_single_click=False)
         self.listbox.set_filter_func(self._filter)
         # row-activated fires on double-click (activate_on_single_click=False):
@@ -225,13 +233,10 @@ class Picker(Gtk.Window):
         self.listbox.connect("row-activated", lambda _lb, row: self._activate(row, edit=row.item["kind"] == "image"))
         scroller = Gtk.ScrolledWindow(vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER)
         scroller.set_child(self.listbox)
-        box.append(scroller)
-        self.set_child(box)
+        self.box.append(scroller)
 
-        keys = Gtk.EventControllerKey()
-        keys.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
-        keys.connect("key-pressed", self._on_key)
-        self.add_controller(keys)
+    def get_visible(self):
+        return self.win is not None
 
     # ── content ──────────────────────────────────────────────
     def _on_search(self):
@@ -268,7 +273,7 @@ class Picker(Gtk.Window):
             drag = Gtk.DragSource(actions=Gdk.DragAction.COPY)
             drag.connect("prepare", self._drag_prepare, item)
             drag.connect("drag-begin", self._drag_begin)
-            drag.connect("drag-end", lambda *_: self.close_picker())
+            drag.connect("drag-end", self._drag_end)
             row.add_controller(drag)
             self.listbox.append(row)
         first = self.listbox.get_row_at_index(0)
@@ -294,8 +299,13 @@ class Picker(Gtk.Window):
         return Gdk.ContentProvider.new_for_value(item["text"])
 
     def _drag_begin(self, src, _drag):
+        self._dragging = True  # the drop target may take focus; close on drag-end instead
         row = src.get_widget()
         src.set_icon(Gtk.WidgetPaintable.new(row.get_child()), 0, 0)
+
+    def _drag_end(self, *_):
+        self._dragging = False
+        self.close_picker("drag")
 
     def prerender(self):
         """Render in the background (while hidden) so opening is instant."""
@@ -307,8 +317,12 @@ class Picker(Gtk.Window):
     def _filter(self, _row):
         return True  # filtering is done by _on_search over the whole history
 
-    # ── show / hide ──────────────────────────────────────────
+    # ── open / close ─────────────────────────────────────────
     def open(self):
+        """Open the picker, or bring it to the front if it is already open."""
+        if self.win is not None:
+            self.on_raise(PICKER_TITLE)
+            return "raised"
         self.search.set_text("")
         if self._rendered_version != self.history.version:
             self.refresh()
@@ -317,19 +331,48 @@ class Picker(Gtk.Window):
             first = self.listbox.get_row_at_index(0)
             if first:
                 self.listbox.select_row(first)
-        self.present()
+        win = Gtk.Window(application=self.app, title=PICKER_TITLE, decorated=False,
+                         default_width=760, default_height=560, resizable=False)
+        win.add_css_class("snapshot-kwin-picker")
+        keys = Gtk.EventControllerKey()
+        keys.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        keys.connect("key-pressed", self._on_key)
+        win.add_controller(keys)
+        win.connect("notify::is-active", self._on_active_changed)
+        win.connect("close-request", lambda *_: self.close_picker("close-request") or True)
+        win.set_child(self.box)
+        self.win = win
+        win.present()
         self.listbox.grab_focus()
         first = self.listbox.get_selected_row()
         if first:
             first.grab_focus()
+        # without an activation token KWin may map the window unfocused; activate it
+        GLib.timeout_add(200, self._ensure_active, win)
+        return "opened"
 
-    def close_picker(self):
-        self.set_visible(False)
+    def _ensure_active(self, win):
+        if self.win is win and not win.is_active():
+            self.on_raise(PICKER_TITLE)
+        return False
+
+    def _on_active_changed(self, win, _pspec):
+        # clicking another window (or anything that takes focus) closes the picker
+        if self.win is win and not win.is_active() and not self._dragging:
+            GLib.idle_add(lambda: self.win is win and self.close_picker("focus lost") or False)
+
+    def close_picker(self, reason="closed"):
+        win, self.win = self.win, None
+        if win is None:
+            return
+        win.set_child(None)  # keep the rendered list for the next open
+        win.destroy()
+        self.log(f"history closed ({reason})")
 
     # ── keys ─────────────────────────────────────────────────
     def _on_key(self, _ctl, keyval, _code, state):
         if keyval == Gdk.KEY_Escape:
-            self.close_picker()
+            self.close_picker("esc")
             return True
         if keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
             row = self.listbox.get_selected_row()
@@ -358,15 +401,15 @@ class Picker(Gtk.Window):
         item = row.item
         if edit:
             if item["kind"] == "image":
-                self.close_picker()
+                self.close_picker("edit")
                 self.on_edit(item)
             return
         # Set the clipboard while we still have focus (Wayland needs a recent input serial).
-        clip = self.get_clipboard()
+        clip = self.win.get_clipboard()
         if item["kind"] == "image":
             data = self.history.path(item).read_bytes()
             clip.set_content(Gdk.ContentProvider.new_for_bytes("image/png", GLib.Bytes.new(data)))
         else:
             clip.set(item["text"])
-        self.close_picker()
+        self.close_picker("paste")
         self.on_paste(item)

@@ -52,6 +52,21 @@ call TestEditLatest; sleep 1; call TestEditorArrowAndFinish; sleep 1
 after=$(ls "$XDG_STATE_HOME"/snapshot-kwin/clipboard/*.png 2>/dev/null | wc -l)
 check "editor result recorded" '[ "$after" -gt "$before" ]'
 
+# 5. clipboard history: open, raise when already open, close when another window
+#    takes focus, reopen as a fresh window
+nlog() { grep -c "$1" "$SKW_WORK/daemon.log"; }
+call ShowHistory; sleep 1
+check "history opened" '[ "$(nlog "history opened")" -ge 1 ]'
+call ShowHistory; sleep 0.5
+check "history raised when already open" '[ "$(nlog "history raised")" -ge 1 ]'
+ghostty --title=e2e-focus -e sleep 60 >/dev/null 2>&1 & GF=$!; sleep 3
+check "history closed when focus moves away" '[ "$(nlog "history closed (focus lost)")" -ge 1 ]'
+call ShowHistory; sleep 1
+check "history reopens as a new window" '[ "$(nlog "history opened")" -ge 2 ]'
+call TestHideHistory; sleep 0.5
+check "history closed by hook" '[ "$(nlog "history closed (test)")" -ge 1 ]'
+kill $GF 2>/dev/null
+
 [ -n "${LONG:-}" ] && cp "$LONG" "${SKW_KEEP:-/dev/null}" 2>/dev/null || true
 kill $DAEMON $KWIN 2>/dev/null
 # Services D-Bus-activated on the private bus (portal, ksecretd, ...) outlive it;
