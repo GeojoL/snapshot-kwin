@@ -62,10 +62,13 @@ Retention defaults to half a year and 5 GiB of images; override in
 
 - App menu / KRunner: search **snapshot** or **截图** (`snapshot-kwin.desktop`).
   Right-click it for 剪贴板历史 / 开启 / 关闭.
-- Shortcuts: **Meta+Alt+1, Print, Meta+Shift+S, Meta+Shift+Print** capture;
+- Shortcuts: **Meta+Alt+1, Print, Meta+Shift+Print** capture (Meta+Shift+S stays Save As);
   **Meta+Shift+V** clipboard history. `install.sh` runs `tools/take-over-shortcuts`,
   which clears every Spectacle *screenshot* key (Spectacle keeps only screen
   recording: Meta+Shift+R etc.), so snapshot-kwin is the only screenshot tool.
+- With a key remapper (xremap) that ignores extra modifiers, pass the capture keys
+  through first, or app mappings swallow them (Chrome's Meta+1 → Ctrl+1 ate
+  Meta+Alt+1): see profilo `linux/xremap/config.yml`, group `kwin passthrough`.
 - Scripts and agents: `snapshot-kwin-shot [OUT.png]` saves the whole desktop silently
   (no overlay, clipboard untouched) and prints the path. Do not use `spectacle -b`.
 - It is a user service: `systemctl --user status|start|stop snapshot-kwin`;

@@ -164,4 +164,4 @@ busctl --user call org.kde.KWin /KWin org.kde.KWin reconfigure >/dev/null 2>&1 |
 busctl --user call org.kde.KWin /Scripting org.kde.kwin.Scripting start >/dev/null 2>&1 || true
 busctl --user call org.kde.KWin /Effects org.kde.kwin.Effects reconfigureEffect s "$KWIN_EFFECT_ID" >/dev/null 2>&1 \
   || busctl --user call org.kde.KWin /Effects org.kde.kwin.Effects loadEffect s "$KWIN_EFFECT_ID" >/dev/null 2>&1 || true
-echo "snapshot-kwin installed: Meta+Alt+1 / Print / Meta+Shift+S capture, Meta+Shift+V history, snapshot-kwin-shot for scripts"
+echo "snapshot-kwin installed: Meta+Alt+1 / Print / Meta+Shift+Print capture, Meta+Shift+V history, snapshot-kwin-shot for scripts"

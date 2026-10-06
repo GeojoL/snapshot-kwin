@@ -3,7 +3,7 @@
 ## Unreleased
 
 - Replaces Spectacle for screenshots: `tools/take-over-shortcuts` gives Print,
-  Meta+Shift+S, Meta+Shift+Print and Meta+Alt+1 to snapshot-kwin and clears
+  Meta+Shift+Print and Meta+Alt+1 to snapshot-kwin (Meta+Shift+S stays Save As) and clears
   Spectacle's screenshot keys (recording untouched). Run by `install.sh`.
 - `snapshot-kwin-shot`: silent whole-desktop PNG via the new `ShotToFile` D-Bus method.
 - Visible launcher (search 截图 / snapshot) with history / on / off actions;
