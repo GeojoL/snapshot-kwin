@@ -30,6 +30,7 @@ import dbus  # noqa: E402
 from .capture import CaptureError, KWinCapture  # noqa: E402
 from .clipboard import History, Picker  # noqa: E402
 from .editor import Editor  # noqa: E402
+from .pointer import PointerMover, ydotool_move  # noqa: E402
 from .stitch import Stitcher  # noqa: E402
 
 
@@ -47,7 +48,9 @@ DBUS_XML = f"""
     <method name="UpdateWindows"><arg type="s" name="json" direction="in"/></method>
     <method name="Capture"/>
     <method name="ShowHistory"/>
+    <method name="ReportCursor"><arg type="i" name="x"/><arg type="i" name="y"/></method>
     <method name="TestHideHistory"/>
+    <method name="TestReadCursor"/>
     <method name="TestEditLatest"/>
     <method name="TestEditorArrowAndFinish"/>
     <method name="TestEditorTool"><arg type="s" name="tool"/></method>
@@ -290,6 +293,7 @@ class App(Gtk.Application):
         self.capture = None
         self.overlay = None
         self.long = None  # running long capture state
+        self._cursor_cb = None
         self.windows = []
         self._reg_id = None
         act = Gio.SimpleAction.new("capture", None)
@@ -317,6 +321,12 @@ class App(Gtk.Application):
         elif method == "Capture":
             invocation.return_value(None)
             GLib.idle_add(self.trigger)
+        elif method == "ReportCursor":
+            x, y = params.unpack()
+            invocation.return_value(None)
+            cb, self._cursor_cb = self._cursor_cb, None
+            if cb:
+                GLib.idle_add(lambda: cb(x, y) or False)
         elif method == "ShowHistory":
             invocation.return_value(None)
             GLib.idle_add(self.show_history)
@@ -346,6 +356,9 @@ class App(Gtk.Application):
                     ed.finish()
                 return False
             GLib.idle_add(go)
+        elif method == "TestReadCursor":  # read-only: logs the cursor position
+            invocation.return_value(None)
+            GLib.idle_add(lambda: self._read_cursor(lambda x, y: _log(f"cursor at {x},{y}")) or False)
         elif method == "TestHideHistory":
             invocation.return_value(None)
             GLib.idle_add(lambda: self.picker.close_picker() or False)
@@ -389,7 +402,64 @@ class App(Gtk.Application):
     LONG_SETTLE_MS = 260     # wait after each wheel burst for smooth scrolling to finish
     LONG_MAX_FRAMES = 200
 
+    # ── pointer (long capture scrolls the pane under the selection's center) ──
+    def _read_cursor(self, cb):
+        """Ask KWin for the cursor position; cb(x, y) is called from ReportCursor
+        (KWin sends int32), or cb(None, None) if no answer arrives within 1 s."""
+        self._cursor_cb = cb
+
+        def timeout():
+            if self._cursor_cb is cb:
+                self._cursor_cb = None
+                _log("cursor read timed out")
+                cb(None, None)
+            return False
+        GLib.timeout_add(1000, timeout)
+        js = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "snapshot-kwin-cursor.js"
+        js.write_text(f'callDBus("{APP_ID}", "{OBJECT_PATH}", "{APP_ID}", "ReportCursor", '
+                      "workspace.cursorPos.x, workspace.cursorPos.y);\n")
+        try:
+            k = self.capture._bus.get_object("org.kde.KWin", "/Scripting")
+            scripting = dbus_iface(k, "org.kde.kwin.Scripting")
+            scripting.unloadScript("snapshot-kwin-cursor")
+            sid = int(scripting.loadScript(str(js), "snapshot-kwin-cursor", signature="ss"))
+            obj = self.capture._bus.get_object("org.kde.KWin", f"/Scripting/Script{sid}")
+            dbus_iface(obj, "org.kde.kwin.Script").run()
+        except Exception as e:  # noqa: BLE001
+            _log(f"cursor read failed: {e}")
+            self._cursor_cb = None
+            cb(None, None)
+
+    def _move_pointer(self, x, y, done):
+        def read(cb):
+            def got(px, py):
+                if px is None:
+                    done(False, None)
+                else:
+                    cb(px, py)
+            self._read_cursor(got)
+        mover = PointerMover(read, ydotool_move, lambda ms, f: GLib.timeout_add(ms, lambda: f() or False), log=_log)
+        mover.go(x, y, done)
+
     def start_long(self, rect, down_keys=0):
+        x, y, w, h = rect
+        if down_keys == 0:
+            # remember where the pointer was, park it on the selection's center,
+            # so the wheel scrolls exactly the pane that was selected
+            def parked(ok, _p):
+                if not ok:
+                    _log("could not park the pointer; scrolling under the current pointer")
+                self._start_long(rect, down_keys)
+
+            def got_origin(px, py):
+                self._pointer_origin = (px, py) if px is not None else None
+                self._move_pointer(x + w // 2, y + h // 2, parked)
+            self._read_cursor(got_origin)
+            return False
+        self._pointer_origin = None
+        return self._start_long(rect, down_keys)
+
+    def _start_long(self, rect, down_keys=0):
         x, y, w, h = rect
         notches = max(1, int(h * 0.45 / 60))  # ~60 px per wheel notch; keep overlap
         self.long = {"rect": rect, "st": Stitcher(), "notches": notches, "stop": False, "down_keys": down_keys,
@@ -456,6 +526,9 @@ class App(Gtk.Application):
         self.overlay.get_clipboard().set_content(Gdk.ContentProvider.new_for_bytes("image/png", GLib.Bytes.new(png)))
         self.history.add_image(png)
         GLib.idle_add(self.picker.prerender)
+        origin = getattr(self, "_pointer_origin", None)
+        if origin:
+            self._move_pointer(round(origin[0]), round(origin[1]), lambda ok, _p: None)
         _log(f"long capture done frames={L['frames']} size={out.get_width()}x{out.get_height()} "
              f"in {time.time() - L['t0']:.1f}s file={path}")
         return False
