@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.0.3 — 2026-10-06
+
+- Long capture scrolls the pane under the *center* of the selection: the pointer
+  is parked there (closed-loop positioning that adapts to pointer acceleration)
+  and restored afterwards. Fixes split layouts where the drag ended over a
+  different pane. Cursor reads time out after 1 s, so a capture never hangs.
+
 ## v0.0.2 — 2026-10-06
 
 - Long (scrolling) capture: press L in the overlay, drag the content area or
