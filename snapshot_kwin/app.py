@@ -9,6 +9,7 @@ costs the KWin grab (~60 ms) plus one frame.
 """
 import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -24,6 +25,7 @@ import cairo  # noqa: E402
 import dbus  # noqa: E402
 
 from .capture import CaptureError, KWinCapture  # noqa: E402
+from .clipboard import History, Picker  # noqa: E402
 
 
 def dbus_iface(obj, name):
@@ -39,6 +41,8 @@ DBUS_XML = f"""
   <interface name="{APP_ID}">
     <method name="UpdateWindows"><arg type="s" name="json" direction="in"/></method>
     <method name="Capture"/>
+    <method name="ShowHistory"/>
+    <method name="TestHideHistory"/>
     <!-- test hooks: drive the overlay without moving the user's pointer -->
     <method name="TestSelect"><arg type="i" name="x"/><arg type="i" name="y"/><arg type="i" name="w"/><arg type="i" name="h"/></method>
     <method name="TestClick"><arg type="i" name="x"/><arg type="i" name="y"/></method>
@@ -279,6 +283,12 @@ class App(Gtk.Application):
         elif method == "Capture":
             invocation.return_value(None)
             GLib.idle_add(self.trigger)
+        elif method == "ShowHistory":
+            invocation.return_value(None)
+            GLib.idle_add(self.show_history)
+        elif method == "TestHideHistory":
+            invocation.return_value(None)
+            GLib.idle_add(lambda: self.picker.close_picker() or False)
         elif method in ("TestSelect", "TestClick"):
             args = params.unpack()
             invocation.return_value(None)
@@ -303,8 +313,65 @@ class App(Gtk.Application):
         self.hold()  # stay resident without a visible window
         self.capture = KWinCapture()
         self.overlay = Overlay(self)
+        self.history = History(log=_log)
+        if not self.history.items:
+            self._seed_history()
+        self.picker = Picker(self, self.history, on_paste=self._paste_into_focused, on_edit=self._edit_image)
+        self._watch_klipper()
+        GLib.idle_add(self.picker.prerender)
         GLib.idle_add(self._reload_window_feed)
         _log("ready")
+
+    # ── clipboard history ────────────────────────────────────
+    def _watch_klipper(self):
+        try:
+            self.capture._bus.add_signal_receiver(
+                lambda: GLib.timeout_add(120, self._record_clipboard),
+                signal_name="clipboardHistoryUpdated", dbus_interface="org.kde.klipper.klipper")
+        except Exception as e:  # noqa: BLE001
+            _log(f"klipper watch failed: {e}")
+
+    def _seed_history(self):
+        """First run: import Klipper's text history and earlier captures."""
+        texts = []
+        try:
+            k = self.capture._bus.get_object("org.kde.klipper", "/klipper")
+            texts = [str(t) for t in dbus_iface(k, "org.kde.klipper.klipper").getClipboardHistoryMenu()]
+        except Exception as e:  # noqa: BLE001
+            _log(f"klipper seed failed: {e}")
+        pngs = sorted(history_dir().glob("*.png"), key=lambda p: p.stat().st_mtime)
+        self.history.seed(texts, pngs)
+        _log(f"seeded history: {len(texts)} texts, {len(pngs)} images")
+
+    def _record_clipboard(self):
+        self.history.record_current()
+        GLib.idle_add(self.picker.prerender)
+        return False
+
+    def show_history(self):
+        t0 = time.time() * 1000
+        self.picker.open()
+        _log(f"history shown items={len(self.history.items)} in {time.time() * 1000 - t0:.0f} ms")
+        return False
+
+    def _paste_into_focused(self, item):
+        # After the picker hides, focus returns to the previous window; send the
+        # platform paste chord through uinput (Meta+V; a key remapper such as
+        # xremap translates it per application, terminals included).
+        GLib.timeout_add(180, self._send_paste)
+
+    def _send_paste(self):
+        sock = os.environ.get("YDOTOOL_SOCKET") or os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), ".ydotool_socket")
+        env = dict(os.environ, YDOTOOL_SOCKET=sock)
+        paste = os.environ.get("SNAPSHOT_KWIN_PASTE_KEYS", "125:1 47:1 47:0 125:0").split()
+        try:
+            subprocess.run(["ydotool", "key", *paste], env=env, timeout=2, check=False, capture_output=True)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            _log(f"paste key failed: {e}")
+        return False
+
+    def _edit_image(self, item):
+        _log(f"edit requested for {item['id']} (editor not implemented yet)")
 
     def _reload_window_feed(self):
         # The KWin script pushes the window list only on changes; reloading it makes
@@ -336,6 +403,9 @@ class App(Gtk.Application):
 
 
 def main():
+    # dbus-python needs the GLib main loop to deliver signals (Klipper changes)
+    from dbus.mainloop.glib import DBusGMainLoop
+    DBusGMainLoop(set_as_default=True)
     return App().run(sys.argv)
 
 

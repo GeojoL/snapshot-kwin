@@ -1,0 +1,264 @@
+"""Clipboard history (text + images) and the picker window.
+
+KWin does not expose a data-control protocol, so an ordinary client cannot watch
+the clipboard in the background. Klipper (Plasma's clipboard service) can, and
+emits org.kde.klipper.klipper.clipboardHistoryUpdated on every change; on that
+signal we read the current selection with wl-paste and record it with a
+timestamp, so text and images share one ordered history.
+
+Picker: Enter pastes into the previously focused window, Shift+Enter opens the
+item in the editor, Esc closes, typing filters text entries.
+"""
+import hashlib
+import json
+import os
+import subprocess
+import time
+from pathlib import Path
+
+import gi
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Gdk", "4.0")
+from gi.repository import Gdk, GLib, Gtk, Pango  # noqa: E402
+
+MAX_ITEMS = 200
+PICKER_TITLE = "snapshot-kwin-clipboard"
+
+
+def state_dir() -> Path:
+    base = os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state")
+    d = Path(base) / "snapshot-kwin" / "clipboard"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _run(args, timeout=2.0):
+    try:
+        return subprocess.run(args, capture_output=True, timeout=timeout, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+class History:
+    """Ordered, de-duplicated clipboard history persisted as index.json + PNG files."""
+
+    def __init__(self, log=print):
+        self.dir = state_dir()
+        self.index = self.dir / "index.json"
+        self.items = []  # newest first: {"id","ts","kind","text"|"file","hash"}
+        self.version = 0  # bumped on every change; the picker re-renders only when it moved
+        self.log = log
+        self._load()
+
+    def _load(self):
+        try:
+            data = json.loads(self.index.read_text())
+            self.items = [i for i in data if i.get("kind") == "text" or (self.dir / i.get("file", "")).exists()]
+        except (OSError, ValueError):
+            self.items = []
+
+    def _save(self):
+        self.version += 1
+        tmp = self.index.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self.items, ensure_ascii=False))
+        os.replace(tmp, self.index)
+
+    def _add(self, kind, payload: bytes, text=None):
+        h = hashlib.sha256(payload).hexdigest()
+        existing = next((i for i in self.items if i["hash"] == h), None)
+        if existing is not None:
+            # already known: just move it to the top
+            self.items.remove(existing)
+            existing["ts"] = time.time()
+            self.items.insert(0, existing)
+        else:
+            item = {"id": h[:16], "ts": time.time(), "kind": kind, "hash": h}
+            if kind == "image":
+                name = f"{h[:16]}.png"
+                (self.dir / name).write_bytes(payload)
+                item["file"] = name
+            else:
+                item["text"] = text
+            self.items.insert(0, item)
+        for old in self.items[MAX_ITEMS:]:
+            if old["kind"] == "image":
+                (self.dir / old["file"]).unlink(missing_ok=True)
+        del self.items[MAX_ITEMS:]
+        self._save()
+
+    def seed(self, texts_newest_first, pngs_oldest_first):
+        now = time.time()
+        for i, t in enumerate(reversed(texts_newest_first)):
+            if t.strip():
+                self._add("text", t.encode(), text=t)
+                self.items[0]["ts"] = now - 86400 + i
+        for p in pngs_oldest_first:
+            self._add("image", p.read_bytes())
+            self.items[0]["ts"] = p.stat().st_mtime
+        self.items.sort(key=lambda i: i["ts"], reverse=True)
+        self._save()
+
+    def record_current(self):
+        """Read the current selection and record it. Called on Klipper's change signal."""
+        types = _run(["wl-paste", "--list-types"])
+        if types is None or types.returncode != 0:
+            return
+        mimes = types.stdout.decode(errors="replace").split()
+        if "image/png" in mimes:
+            r = _run(["wl-paste", "--no-newline", "--type", "image/png"], timeout=5)
+            if r and r.returncode == 0 and r.stdout:
+                self._add("image", r.stdout)
+                return
+        if any(m.startswith("text/") or m in ("UTF8_STRING", "STRING", "TEXT") for m in mimes):
+            r = _run(["wl-paste", "--no-newline"])
+            if r and r.returncode == 0 and r.stdout.strip():
+                text = r.stdout.decode(errors="replace")
+                self._add("text", text.encode(), text=text)
+
+    def path(self, item) -> Path:
+        return self.dir / item["file"]
+
+
+class Picker(Gtk.Window):
+    def __init__(self, app, history, on_paste, on_edit):
+        super().__init__(application=app, title=PICKER_TITLE, decorated=False,
+                         default_width=760, default_height=560, resizable=False)
+        self.history = history
+        self.on_paste = on_paste
+        self.on_edit = on_edit
+        self.add_css_class("snapshot-kwin-picker")
+        self._rendered_version = -1
+
+        css = Gtk.CssProvider()
+        css.load_from_string("""
+            .snapshot-kwin-picker { background: #1e1e2e; border: 1px solid #45475a; border-radius: 12px; }
+            .snapshot-kwin-picker entry { margin: 12px; }
+            .snapshot-kwin-picker row { padding: 8px 12px; color: #cdd6f4; }
+            .snapshot-kwin-picker row:selected { background: #313244; border-radius: 8px; }
+            .snapshot-kwin-picker .hint { color: #7f849c; margin: 6px 12px 10px; font-size: 0.9em; }
+        """)
+        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.search = Gtk.SearchEntry(placeholder_text="搜索文字…")
+        self.search.connect("search-changed", lambda *_: self.listbox.invalidate_filter())
+        box.append(self.search)
+        self.listbox = Gtk.ListBox(selection_mode=Gtk.SelectionMode.SINGLE, activate_on_single_click=False)
+        self.listbox.set_filter_func(self._filter)
+        self.listbox.connect("row-activated", lambda _lb, row: self._activate(row, edit=False))
+        scroller = Gtk.ScrolledWindow(vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER)
+        scroller.set_child(self.listbox)
+        box.append(scroller)
+        hint = Gtk.Label(label="回车 粘贴   ·   Shift+回车 编辑图片   ·   Esc 关闭", xalign=0)
+        hint.add_css_class("hint")
+        box.append(hint)
+        self.set_child(box)
+
+        keys = Gtk.EventControllerKey()
+        keys.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        keys.connect("key-pressed", self._on_key)
+        self.add_controller(keys)
+
+    # ── content ──────────────────────────────────────────────
+    def refresh(self):
+        child = self.listbox.get_first_child()
+        while child is not None:
+            nxt = child.get_next_sibling()
+            self.listbox.remove(child)
+            child = nxt
+        for item in self.history.items:
+            row = Gtk.ListBoxRow()
+            row.item = item
+            if item["kind"] == "image":
+                pic = Gtk.Picture.new_for_filename(str(self.history.path(item)))
+                pic.set_content_fit(Gtk.ContentFit.CONTAIN)
+                pic.set_size_request(-1, 96)
+                pic.set_halign(Gtk.Align.START)
+                row.set_child(pic)
+            else:
+                text = " ".join(item["text"].split())
+                lbl = Gtk.Label(label=text[:400], xalign=0, wrap=True, lines=2,
+                                ellipsize=Pango.EllipsizeMode.END)
+                row.set_child(lbl)
+            self.listbox.append(row)
+        first = self.listbox.get_row_at_index(0)
+        if first:
+            self.listbox.select_row(first)
+
+    def prerender(self):
+        """Render in the background (while hidden) so opening is instant."""
+        if not self.get_visible() and self._rendered_version != self.history.version:
+            self.refresh()
+            self._rendered_version = self.history.version
+        return False
+
+    def _filter(self, row):
+        q = self.search.get_text().strip().lower()
+        if not q:
+            return True
+        return row.item["kind"] == "text" and q in row.item["text"].lower()
+
+    # ── show / hide ──────────────────────────────────────────
+    def open(self):
+        self.search.set_text("")
+        if self._rendered_version != self.history.version:
+            self.refresh()
+            self._rendered_version = self.history.version
+        else:
+            first = self.listbox.get_row_at_index(0)
+            if first:
+                self.listbox.select_row(first)
+        self.present()
+        self.listbox.grab_focus()
+        first = self.listbox.get_selected_row()
+        if first:
+            first.grab_focus()
+
+    def close_picker(self):
+        self.set_visible(False)
+
+    # ── keys ─────────────────────────────────────────────────
+    def _on_key(self, _ctl, keyval, _code, state):
+        if keyval == Gdk.KEY_Escape:
+            self.close_picker()
+            return True
+        if keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
+            row = self.listbox.get_selected_row()
+            if row is not None:
+                self._activate(row, edit=bool(state & Gdk.ModifierType.SHIFT_MASK))
+            return True
+        if keyval in (Gdk.KEY_Down, Gdk.KEY_Up):
+            self._move(1 if keyval == Gdk.KEY_Down else -1)
+            return True
+        return False
+
+    def _move(self, step):
+        row = self.listbox.get_selected_row()
+        i = row.get_index() if row else -1
+        while True:
+            i += step
+            nxt = self.listbox.get_row_at_index(i)
+            if nxt is None:
+                return
+            if nxt.get_child_visible() and self._filter(nxt):
+                self.listbox.select_row(nxt)
+                nxt.grab_focus()
+                return
+
+    def _activate(self, row, edit):
+        item = row.item
+        if edit:
+            if item["kind"] == "image":
+                self.close_picker()
+                self.on_edit(item)
+            return
+        # Set the clipboard while we still have focus (Wayland needs a recent input serial).
+        clip = self.get_clipboard()
+        if item["kind"] == "image":
+            data = self.history.path(item).read_bytes()
+            clip.set_content(Gdk.ContentProvider.new_for_bytes("image/png", GLib.Bytes.new(data)))
+        else:
+            clip.set(item["text"])
+        self.close_picker()
+        self.on_paste(item)
