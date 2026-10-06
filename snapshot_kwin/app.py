@@ -30,6 +30,7 @@ import dbus  # noqa: E402
 from .capture import CaptureError, KWinCapture  # noqa: E402
 from .clipboard import History, Picker  # noqa: E402
 from .editor import Editor  # noqa: E402
+from .stitch import Stitcher  # noqa: E402
 
 
 def dbus_iface(obj, name):
@@ -50,6 +51,8 @@ DBUS_XML = f"""
     <method name="TestEditLatest"/>
     <method name="TestEditorArrowAndFinish"/>
     <method name="TestEditorTool"><arg type="s" name="tool"/></method>
+    <!-- long capture with arrow-key scrolling of the focused test window (no pointer use) -->
+    <method name="TestLong"><arg type="i" name="x"/><arg type="i" name="y"/><arg type="i" name="w"/><arg type="i" name="h"/><arg type="i" name="down_keys"/></method>
     <!-- test hooks: drive the overlay without moving the user's pointer -->
     <method name="TestSelect"><arg type="i" name="x"/><arg type="i" name="y"/><arg type="i" name="w"/><arg type="i" name="h"/></method>
     <method name="TestClick"><arg type="i" name="x"/><arg type="i" name="y"/></method>
@@ -79,6 +82,7 @@ class Overlay(Gtk.Window):
         self.drag_rect = None        # (x, y, w, h) logical px
         self.hover = None            # window dict under pointer
         self.trigger_ms = None
+        self.long_mode = False
         self._first_frame_logged = True
 
         self.area = Gtk.DrawingArea(hexpand=True, vexpand=True)
@@ -107,6 +111,7 @@ class Overlay(Gtk.Window):
         self.surface = surface
         self.windows = windows
         self.drag_start = self.drag_rect = self.hover = None
+        self.long_mode = False
         self.trigger_ms = trigger_ms
         self._first_frame_logged = False
         self.fullscreen()
@@ -170,7 +175,11 @@ class Overlay(Gtk.Window):
                 px = f"{round(w * s)} × {round(h * s)}"
                 self._label(cr, px, x + 6, y + h + 20 if y + h + 28 < height else y - 10)
 
-        self._label(cr, "拖框 = 选区   ·   点击窗口 = 整个窗口   ·   Esc 取消", width / 2, 34, center=True)
+        if self.long_mode:
+            hint = "长图:拖框选内容区域 / 点击窗口,开始自动滚动   ·   L 返回普通截图   ·   Esc 取消"
+        else:
+            hint = "拖框 = 选区   ·   点击窗口 = 整个窗口   ·   L 长图   ·   Esc 取消"
+        self._label(cr, hint, width / 2, 34, center=True)
 
     def _label(self, cr, text, x, y, center=False):
         # Pango (not cairo's toy text API) so CJK text gets a proper fallback font.
@@ -228,10 +237,21 @@ class Overlay(Gtk.Window):
             _log("cancelled")
             self.dismiss()
             return True
+        if keyval in (Gdk.KEY_l, Gdk.KEY_L):
+            self.long_mode = not self.long_mode
+            self.area.queue_draw()
+            return True
         return False
 
     # ── output ───────────────────────────────────────────────
     def _finish(self, rect, kind):
+        if self.long_mode:
+            x, y, w, h = (int(round(v)) for v in rect)
+            self.dismiss()
+            if w >= 40 and h >= 80:
+                # start after the overlay is gone so it is not in the frames
+                GLib.timeout_add(150, self.app.start_long, (x, y, w, h))
+            return
         # Whatever happens, never leave the frozen overlay covering the screen.
         try:
             self._export(rect, kind)
@@ -268,6 +288,7 @@ class App(Gtk.Application):
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
         self.capture = None
         self.overlay = None
+        self.long = None  # running long capture state
         self.windows = []
         self._reg_id = None
         act = Gio.SimpleAction.new("capture", None)
@@ -303,6 +324,10 @@ class App(Gtk.Application):
             img = next((i for i in self.history.items if i["kind"] == "image"), None)
             if img:
                 GLib.idle_add(lambda: self._edit_image(img) or False)
+        elif method == "TestLong":
+            x, y, w, h, keys = params.unpack()
+            invocation.return_value(None)
+            GLib.idle_add(lambda: self.start_long((x, y, w, h), down_keys=keys) or False)
         elif method == "TestEditorTool":
             invocation.return_value(None)
             tool = params.unpack()[0]
@@ -358,6 +383,80 @@ class App(Gtk.Application):
         GLib.idle_add(self.picker.prerender)
         GLib.idle_add(self._reload_window_feed)
         _log("ready")
+
+    # ── long (scrolling) capture ─────────────────────────────
+    LONG_SETTLE_MS = 260     # wait after each wheel burst for smooth scrolling to finish
+    LONG_MAX_FRAMES = 200
+
+    def start_long(self, rect, down_keys=0):
+        x, y, w, h = rect
+        notches = max(1, int(h * 0.45 / 60))  # ~60 px per wheel notch; keep overlap
+        self.long = {"rect": rect, "st": Stitcher(), "notches": notches, "stop": False, "down_keys": down_keys,
+                     # self-scrolling content (tests) may start late: be more patient
+                     "stall_limit": 12 if down_keys < 0 else 2,
+                     "frames": 0, "stalls": 0, "t0": time.time()}
+        _log(f"long capture start rect={rect} notches={notches}")
+        GLib.idle_add(self._long_step)
+        return False
+
+    def _long_step(self):
+        L = self.long
+        if L is None:
+            return False
+        try:
+            surf, _ = self.capture.area(*L["rect"])
+        except CaptureError as e:
+            _log(f"long capture failed: {e}")
+            return self._long_finish()
+        L["frames"] += 1
+        st = L["st"]
+        if st.add(surf) or L["frames"] == 1:
+            L["stalls"] = 0
+            if L["stop"] or L["frames"] >= self.LONG_MAX_FRAMES or st.height >= st.max_height:
+                return self._long_finish()
+            return self._long_scroll()
+        # nothing new: smooth scrolling may still be running, look once more before ending
+        L["stalls"] += 1
+        if L["stalls"] >= L["stall_limit"] or L["stop"] or st.height >= st.max_height:
+            return self._long_finish()
+        GLib.timeout_add(self.LONG_SETTLE_MS, self._long_step)
+        return False
+
+    def _long_scroll(self):
+        L = self.long
+        if L["stop"]:
+            return self._long_finish()
+        env = dict(os.environ, YDOTOOL_SOCKET=os.environ.get("YDOTOOL_SOCKET") or
+                   os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), ".ydotool_socket"))
+        if L["down_keys"] < 0:  # tests: the content scrolls by itself, send no input at all
+            GLib.timeout_add(self.LONG_SETTLE_MS, self._long_step)
+            return False
+        if L["down_keys"]:
+            cmd = ["ydotool", "key"] + ["108:1", "108:0"] * L["down_keys"]  # Down arrow (tests)
+        else:
+            cmd = ["ydotool", "mousemove", "-w", "-x", "0", "-y", str(-L["notches"])]
+        try:
+            subprocess.run(cmd, env=env, timeout=5, check=False, capture_output=True)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            _log(f"wheel failed: {e}")
+            return self._long_finish()
+        GLib.timeout_add(self.LONG_SETTLE_MS, self._long_step)
+        return False
+
+    def _long_finish(self):
+        L, self.long = self.long, None
+        out = L["st"].render()
+        if out is None:
+            return False
+        path = history_dir() / (time.strftime("%Y%m%d-%H%M%S-") + "long.png")
+        out.write_to_png(str(path))
+        png = path.read_bytes()
+        self.overlay.get_clipboard().set_content(Gdk.ContentProvider.new_for_bytes("image/png", GLib.Bytes.new(png)))
+        self.history.add_image(png)
+        GLib.idle_add(self.picker.prerender)
+        _log(f"long capture done frames={L['frames']} size={out.get_width()}x{out.get_height()} "
+             f"in {time.time() - L['t0']:.1f}s file={path}")
+        return False
 
     # ── clipboard history ────────────────────────────────────
     def _watch_klipper(self):
@@ -454,6 +553,9 @@ class App(Gtk.Application):
         pass  # activation alone does nothing; the "capture" action / Capture() does the work
 
     def trigger(self):
+        if self.long is not None:
+            self.long["stop"] = True
+            return False
         t0 = time.time() * 1000
         if self.overlay.get_visible():
             return False

@@ -27,13 +27,19 @@ class KWinCapture:
         self._iface = dbus.Interface(obj, "org.kde.KWin.ScreenShot2")
 
     def workspace(self):
-        """整个桌面(所有屏幕)。返回 (cairo.ImageSurface, scale)。"""
+        """The whole desktop (all screens). Returns (cairo.ImageSurface, scale)."""
         return self._call("CaptureWorkspace", {"native-resolution": True})
+
+    def area(self, x, y, w, h):
+        """A screen rectangle in logical coordinates (used for long captures)."""
+        return self._call("CaptureArea", {"native-resolution": True},
+                          dbus.Int32(x), dbus.Int32(y), dbus.UInt32(w), dbus.UInt32(h))
 
     def _call(self, method, options, *args):
         r, w = os.pipe()
         try:
-            meta = getattr(self._iface, method)(*args, options, dbus.types.UnixFd(w))
+            meta = getattr(self._iface, method)(*args, options, dbus.types.UnixFd(w),
+                                                timeout=10)
         except dbus.DBusException as e:
             os.close(r)
             raise CaptureError(f"{e.get_dbus_name()}: {e.get_dbus_message()}") from e

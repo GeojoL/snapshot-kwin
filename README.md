@@ -52,12 +52,26 @@ Then bind a global shortcut to `~/.local/bin/snapshot-kwin-capture`
 
 Captures are saved to `${XDG_STATE_HOME:-~/.local/state}/snapshot-kwin/history/`.
 
+## Tests
+
+```sh
+python3 -m unittest discover -s tests   # rendering, hit-testing, crop math, stitching
+tests/e2e/run.sh                        # end-to-end in an invisible nested KWin
+```
+
+The end-to-end suite starts `kwin_wayland --virtual` on a private D-Bus session
+with throwaway config/state directories and drives the daemon through test-only
+D-Bus hooks, so it never touches your desktop, focus, input or clipboard. The
+long-capture scenario uses a terminal whose output scrolls by itself, so no input
+is injected at all. `packaging/snapshot-kwin-nightly.timer` runs everything
+nightly (`tests/nightly.sh`, logs in `~/.local/state/snapshot-kwin/e2e/`).
+
 ## Roadmap
 
 - [x] Instant region / window capture to clipboard
-- [ ] Long capture: auto-scroll the window under the pointer and stitch
-- [ ] Clipboard history (text + images) as the entry point for editing
-- [ ] Editor: pen, highlighter, line, arrow, rectangle, ellipse, text, numbered
+- [x] Long capture: auto-scroll the window under the pointer and stitch (press L in the overlay)
+- [x] Clipboard history (text + images) as the entry point for editing
+- [x] Editor: pen, highlighter, line, arrow, rectangle, ellipse, text, numbered
       stamps, pixelate/blur, eraser; crop, rotate, flip, resize; undo/redo
 - [ ] Multi-monitor and fractional scaling
 
