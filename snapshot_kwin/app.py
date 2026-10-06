@@ -48,6 +48,7 @@ DBUS_XML = f"""
     <method name="UpdateWindows"><arg type="s" name="json" direction="in"/></method>
     <method name="Capture"/>
     <method name="ShowHistory"/>
+    <method name="ShotToFile"><arg type="s" name="path" direction="in"/><arg type="s" name="result" direction="out"/></method>
     <method name="ReportCursor"><arg type="i" name="x"/><arg type="i" name="y"/></method>
     <method name="TestHideHistory"/>
     <method name="TestReadCursor"/>
@@ -327,6 +328,16 @@ class App(Gtk.Application):
             cb, self._cursor_cb = self._cursor_cb, None
             if cb:
                 GLib.idle_add(lambda: cb(x, y) or False)
+        elif method == "ShotToFile":
+            # Silent whole-desktop PNG for scripts and agents: no overlay, clipboard
+            # and history untouched. Replies with the path, or "error: ..." on failure.
+            path = params.unpack()[0]
+            try:
+                surface, _ = self.capture.workspace()
+                surface.write_to_png(path)
+                invocation.return_value(GLib.Variant("(s)", (path,)))
+            except Exception as e:  # noqa: BLE001
+                invocation.return_value(GLib.Variant("(s)", (f"error: {e}",)))
         elif method == "ShowHistory":
             invocation.return_value(None)
             GLib.idle_add(self.show_history)

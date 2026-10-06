@@ -23,6 +23,7 @@ UNIT="$CONFIG_HOME/systemd/user/snapshot-kwin.service"
 TRIGGER="$BIN/snapshot-kwin-capture"
 HISTORY="$BIN/snapshot-kwin-history"
 TERM_PASTE="$BIN/term-paste"
+SHOT="$BIN/snapshot-kwin-shot"
 LAUNCHER="$DATA_HOME/applications/snapshot-kwin.desktop"
 KWIN_SCRIPT_ID=snapshot-kwin-windows
 KWIN_EFFECT_ID=snapshot-kwin-noanim
@@ -34,7 +35,7 @@ uninstall() {
   busctl --user call org.kde.KWin /Effects org.kde.kwin.Effects unloadEffect s "$KWIN_EFFECT_ID" >/dev/null 2>&1 || true
   kpackagetool6 --type KWin/Effect -r "$KWIN_EFFECT_ID" >/dev/null 2>&1 || true
   kwriteconfig6 --file kwinrc --group Plugins --key "${KWIN_EFFECT_ID}Enabled" --delete 2>/dev/null || true
-  rm -f -- "$UNIT" "$DESKTOP" "$TRIGGER" "$HISTORY" "$TERM_PASTE" "$LAUNCHER"
+  rm -f -- "$UNIT" "$DESKTOP" "$TRIGGER" "$HISTORY" "$TERM_PASTE" "$LAUNCHER" "$SHOT" "$DATA_HOME/applications/snapshot-kwin-capture.desktop" "$DATA_HOME/applications/snapshot-kwin-history.desktop"
   rm -rf -- "$LIBEXEC"
   systemctl --user daemon-reload
   echo "snapshot-kwin removed (history in \${XDG_STATE_HOME:-~/.local/state}/snapshot-kwin kept)"
@@ -138,6 +139,20 @@ Name=关闭(停止并取消开机启动)
 Exec=systemctl --user disable --now snapshot-kwin.service
 EOF
 
+# hidden shortcut entries (kglobalaccel components) + silent shot CLI, then take
+# every screenshot key from Spectacle (it keeps recording): tools/take-over-shortcuts
+for kind in capture history; do
+  cat > "$DATA_HOME/applications/snapshot-kwin-$kind.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=snapshot-kwin $( [ $kind = capture ] && echo 截图 || echo 剪贴板历史 )
+Exec=$BIN/snapshot-kwin-$kind
+NoDisplay=true
+EOF
+done
+ln -sfn "$SRC/tools/snapshot-kwin-shot" "$SHOT"
+python3 "$SRC/tools/take-over-shortcuts" || echo "warning: shortcuts not taken over (no Plasma session?)" >&2
+
 # terminal paste helper (bind Meta+V in the terminal to it, e.g. via xremap)
 ln -sfn "$SRC/tools/term-paste" "$TERM_PASTE"
 
@@ -149,4 +164,4 @@ busctl --user call org.kde.KWin /KWin org.kde.KWin reconfigure >/dev/null 2>&1 |
 busctl --user call org.kde.KWin /Scripting org.kde.kwin.Scripting start >/dev/null 2>&1 || true
 busctl --user call org.kde.KWin /Effects org.kde.kwin.Effects reconfigureEffect s "$KWIN_EFFECT_ID" >/dev/null 2>&1 \
   || busctl --user call org.kde.KWin /Effects org.kde.kwin.Effects loadEffect s "$KWIN_EFFECT_ID" >/dev/null 2>&1 || true
-echo "snapshot-kwin installed. Bind a shortcut to: $TRIGGER"
+echo "snapshot-kwin installed: Meta+Alt+1 / Print / Meta+Shift+S capture, Meta+Shift+V history, snapshot-kwin-shot for scripts"

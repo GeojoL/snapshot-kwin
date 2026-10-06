@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Replaces Spectacle for screenshots: `tools/take-over-shortcuts` gives Print,
+  Meta+Shift+S, Meta+Shift+Print and Meta+Alt+1 to snapshot-kwin and clears
+  Spectacle's screenshot keys (recording untouched). Run by `install.sh`.
+- `snapshot-kwin-shot`: silent whole-desktop PNG via the new `ShotToFile` D-Bus method.
+- Visible launcher (search 截图 / snapshot) with history / on / off actions;
+  `install.sh` now creates every entry it relies on.
 - Clipboard history rows can be dragged out (images as PNG file + `image/png`, text as text).
 - `tools/term-paste`: Meta+V in a terminal pastes text or images into the active
   tmux pane (Ctrl+V for Claude Code, a saved PNG path elsewhere); linked by `install.sh`.

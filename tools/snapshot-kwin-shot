@@ -1,0 +1,11 @@
+#!/bin/sh
+# Silent whole-desktop screenshot to a PNG file (for scripts and agents; no overlay,
+# clipboard untouched). Usage: snapshot-kwin-shot [OUT.png]   prints the path.
+# Use this instead of `spectacle -b`: snapshot-kwin is the only screenshot tool here.
+out="${1:-${XDG_RUNTIME_DIR:-/tmp}/snapshot-kwin-shot-$(date +%Y%m%d-%H%M%S).png}"
+case "$out" in /*) ;; *) out="$PWD/$out" ;; esac
+r=$(busctl --user call io.github.geojol.SnapshotKwin /io/github/geojol/SnapshotKwin \
+  io.github.geojol.SnapshotKwin ShotToFile s "$out") || exit 1
+r=${r#s \"}; r=${r%\"}
+case "$r" in error:*) echo "$r" >&2; exit 1 ;; esac
+echo "$r"

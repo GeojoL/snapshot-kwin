@@ -47,8 +47,7 @@ Requirements: Plasma 6 Wayland, `python3` with `gi` (GTK 4), `pycairo` and
 ./install.sh --uninstall
 ```
 
-Then bind a global shortcut to `~/.local/bin/snapshot-kwin-capture`
-(System Settings → Shortcuts → Add Command).
+Shortcuts are set up by the installer (see *Find it, turn it on/off*).
 
 Captures and the clipboard history live in
 `${XDG_STATE_HOME:-~/.local/state}/snapshot-kwin/clipboard/` (each image once).
@@ -63,7 +62,12 @@ Retention defaults to half a year and 5 GiB of images; override in
 
 - App menu / KRunner: search **snapshot** or **截图** (`snapshot-kwin.desktop`).
   Right-click it for 剪贴板历史 / 开启 / 关闭.
-- Shortcuts: Meta+Alt+1 capture, Meta+Shift+V clipboard history.
+- Shortcuts: **Meta+Alt+1, Print, Meta+Shift+S, Meta+Shift+Print** capture;
+  **Meta+Shift+V** clipboard history. `install.sh` runs `tools/take-over-shortcuts`,
+  which clears every Spectacle *screenshot* key (Spectacle keeps only screen
+  recording: Meta+Shift+R etc.), so snapshot-kwin is the only screenshot tool.
+- Scripts and agents: `snapshot-kwin-shot [OUT.png]` saves the whole desktop silently
+  (no overlay, clipboard untouched) and prints the path. Do not use `spectacle -b`.
 - It is a user service: `systemctl --user status|start|stop snapshot-kwin`;
   `disable --now` turns it off for good, `enable --now` brings it back.
 - Logs: `journalctl --user -u snapshot-kwin`. Source: this repo; `./install.sh` rewires everything.

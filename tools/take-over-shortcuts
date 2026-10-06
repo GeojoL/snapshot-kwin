@@ -1,0 +1,48 @@
+#!/usr/bin/env python3
+"""Make snapshot-kwin the only screenshot tool; Spectacle keeps screen recording.
+
+Idempotent; run by install.sh. Uses the live kglobalaccel D-Bus API, so it takes
+effect immediately and is persisted by KDE in ~/.config/kglobalshortcutsrc.
+
+  snapshot-kwin capture : Meta+Alt+1, Print, Meta+Shift+S, Meta+Shift+Print
+  snapshot-kwin history : Meta+Shift+V
+  Spectacle             : every screenshot action cleared; Record* left as they are
+"""
+import dbus
+
+META, SHIFT, CTRL, ALT = 0x10000000, 0x02000000, 0x04000000, 0x08000000
+PRINT = 0x01000009
+
+CAPTURE = [META | ALT | ord("1"), PRINT, META | SHIFT | ord("S"), META | SHIFT | PRINT]
+HISTORY = [META | SHIFT | ord("V")]
+SPECTACLE_SCREENSHOT_ACTIONS = [
+    ("_launch", "Spectacle"),
+    ("ActiveWindowScreenShot", "Capture Active Window"),
+    ("CurrentMonitorScreenShot", "Capture Current Monitor"),
+    ("FullScreenScreenShot", "Capture Entire Desktop"),
+    ("RectangularRegionScreenShot", "Capture Rectangular Region"),
+    ("WindowUnderCursorScreenShot", "Capture Window Under Cursor"),
+]
+
+bus = dbus.SessionBus()
+kga = dbus.Interface(bus.get_object("org.kde.kglobalaccel", "/kglobalaccel"), "org.kde.KGlobalAccel")
+
+
+def keys(codes):
+    return dbus.Array([dbus.Struct((dbus.Array([dbus.Int32(c)], signature="i"),), signature="ai") for c in codes],
+                      signature="(ai)")
+
+
+def set_keys(component, action, friendly_component, friendly_action, codes):
+    action_id = dbus.Array([component, action, friendly_component, friendly_action], signature="s")
+    kga.doRegister(action_id)
+    kga.setForeignShortcutKeys(action_id, keys(codes))
+
+
+# free the keys first, then claim them
+for action, friendly in SPECTACLE_SCREENSHOT_ACTIONS:
+    set_keys("org.kde.spectacle.desktop", action, "Spectacle", friendly, [])
+set_keys("snapshot-kwin-capture.desktop", "_launch", "snapshot-kwin 截图", "snapshot-kwin 截图", CAPTURE)
+set_keys("snapshot-kwin-history.desktop", "_launch", "snapshot-kwin 剪贴板历史", "snapshot-kwin 剪贴板历史", HISTORY)
+print("shortcuts: snapshot-kwin owns Meta+Alt+1 / Print / Meta+Shift+S / Meta+Shift+Print / Meta+Shift+V; "
+      "Spectacle keeps recording only")
