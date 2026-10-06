@@ -50,7 +50,7 @@ grim/slurp 依赖 wlr-screencopy / ext-image-copy-capture,KWin 6.7.5 均未实�
   `X-KDE-DBUS-Restricted-Interfaces=org.kde.KWin.ScreenShot2`,KWin 按调用进程的可执行文件路径匹配,
   所以守护进程用固定路径的专用解释器副本运行,只授权这一份,不授权系统 Python。
 - **界面**:Python + GTK4/Adwaita + cairo(系统自带,免安装)。全屏冻结画面上框选,
-  松手进入标注编辑器;标注以矢量对象保存,导出时栅格化。
+  选定后直接进剪贴板(不弹编辑器)。标注编辑器只从剪贴板历史进入;标注以矢量对象保存,回车时栅格化写回剪贴板。
 - **触发**:Meta+Alt+1 → 小脚本经 D-Bus 调守护进程(不新起 GUI 进程)。
 
 ## 状态
