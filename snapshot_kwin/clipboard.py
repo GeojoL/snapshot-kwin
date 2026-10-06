@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -100,22 +101,47 @@ class History:
         self.items.sort(key=lambda i: i["ts"], reverse=True)
         self._save()
 
-    def record_current(self):
-        """Read the current selection and record it. Called on Klipper's change signal."""
+    def add_image(self, png: bytes):
+        """Record an image we produced ourselves (a capture or an edit)."""
+        self._add("image", png)
+
+    def record_current_async(self, done=None):
+        """Read the current selection off the main thread, then record it on it.
+
+        wl-paste asks the selection owner for the data. If the owner is this very
+        process and we waited synchronously, nobody would answer (deadlock until
+        timeout), so the read happens in a worker thread.
+        """
+        def work():
+            got = self._read_selection()
+            GLib.idle_add(finish, got)
+
+        def finish(got):
+            if got is not None:
+                kind, payload, text = got
+                self._add(kind, payload, text=text)
+            if done:
+                done()
+            return False
+
+        threading.Thread(target=work, daemon=True).start()
+
+    @staticmethod
+    def _read_selection():
         types = _run(["wl-paste", "--list-types"])
         if types is None or types.returncode != 0:
-            return
+            return None
         mimes = types.stdout.decode(errors="replace").split()
         if "image/png" in mimes:
             r = _run(["wl-paste", "--no-newline", "--type", "image/png"], timeout=5)
             if r and r.returncode == 0 and r.stdout:
-                self._add("image", r.stdout)
-                return
+                return ("image", r.stdout, None)
         if any(m.startswith("text/") or m in ("UTF8_STRING", "STRING", "TEXT") for m in mimes):
             r = _run(["wl-paste", "--no-newline"])
             if r and r.returncode == 0 and r.stdout.strip():
                 text = r.stdout.decode(errors="replace")
-                self._add("text", text.encode(), text=text)
+                return ("text", text.encode(), text)
+        return None
 
     def path(self, item) -> Path:
         return self.dir / item["file"]

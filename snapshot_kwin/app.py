@@ -7,6 +7,7 @@ Workflow (see docs/design-notes.zh.md):
 The process stays resident and keeps the overlay window built, so a capture only
 costs the KWin grab (~60 ms) plus one frame.
 """
+import hashlib
 import json
 import os
 import subprocess
@@ -252,6 +253,8 @@ class Overlay(Gtk.Window):
         png = path.read_bytes()
         provider = Gdk.ContentProvider.new_for_bytes("image/png", GLib.Bytes.new(png))
         self.get_clipboard().set_content(provider)
+        self.app.history.add_image(png)
+        GLib.idle_add(self.app.picker.prerender)
         _log(f"captured kind={kind} size={sw}x{sh} file={path}")
 
 
@@ -320,6 +323,8 @@ class App(Gtk.Application):
         self.history = History(log=_log)
         if not self.history.items:
             self._seed_history()
+        else:
+            self._backfill_captures()
         self.picker = Picker(self, self.history, on_paste=self._paste_into_focused, on_edit=self._edit_image)
         self._watch_klipper()
         GLib.idle_add(self.picker.prerender)
@@ -347,9 +352,26 @@ class App(Gtk.Application):
         self.history.seed(texts, pngs)
         _log(f"seeded history: {len(texts)} texts, {len(pngs)} images")
 
+    def _backfill_captures(self):
+        """Captures saved to disk but missing from the history (e.g. after a crash)."""
+        known = {i["hash"] for i in self.history.items}
+        added = 0
+        for p in sorted(history_dir().glob("*.png"), key=lambda p: p.stat().st_mtime):
+            data = p.read_bytes()
+            if hashlib.sha256(data).hexdigest() not in known:
+                self.history.add_image(data)
+                self.history.items[0]["ts"] = p.stat().st_mtime
+                added += 1
+        if added:
+            self.history.items.sort(key=lambda i: i["ts"], reverse=True)
+            self.history._save()
+            _log(f"backfilled {added} capture(s) into history")
+
     def _record_clipboard(self):
-        self.history.record_current()
-        GLib.idle_add(self.picker.prerender)
+        # Our own captures/edits are recorded directly; skip when we own the selection.
+        if Gdk.Display.get_default().get_clipboard().is_local():
+            return False
+        self.history.record_current_async(done=self.picker.prerender)
         return False
 
     def show_history(self):
