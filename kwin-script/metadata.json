@@ -1,0 +1,12 @@
+{
+    "KPlugin": {
+        "Id": "snapshot-kwin-windows",
+        "Name": "snapshot-kwin window geometry feed",
+        "Description": "Pushes visible window geometry to the snapshot-kwin daemon for click-to-capture",
+        "License": "MIT",
+        "Version": "0.1"
+    },
+    "X-Plasma-API": "javascript",
+    "X-Plasma-API-Minimum-Version": "6.0",
+    "KPackageStructure": "KWin/Script"
+}
