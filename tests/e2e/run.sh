@@ -11,8 +11,12 @@
 #   tests/e2e/run.sh            run all scenarios, exit non-zero on failure
 set -euo pipefail
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
-PY="${SNAPSHOT_KWIN_PYTHON:-$(readlink -f "$HOME/.local/libexec/snapshot-kwin/snapshot-kwin-python")}"
-[ -x "$PY" ] || { echo "authorized interpreter missing; run ./install.sh first" >&2; exit 2; }
+# the authorized interpreter copy: protected install (/usr/local) or per-user
+PY="${SNAPSHOT_KWIN_PYTHON:-}"
+for c in /usr/local/libexec/snapshot-kwin/snapshot-kwin-python "$HOME/.local/libexec/snapshot-kwin/snapshot-kwin-python"; do
+  [ -z "$PY" ] && [ -x "$c" ] && PY="$(readlink -f "$c")"
+done
+[ -x "${PY:-}" ] || { echo "authorized interpreter missing; run ./install.sh (or sudo tools/install-system) first" >&2; exit 2; }
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/snapshot-kwin-e2e.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$WORK/config" "$WORK/state" "$WORK/runtime"

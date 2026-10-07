@@ -27,6 +27,10 @@ SHOT="$BIN/snapshot-kwin-shot"
 LAUNCHER="$DATA_HOME/applications/snapshot-kwin.desktop"
 KWIN_SCRIPT_ID=snapshot-kwin-windows
 KWIN_EFFECT_ID=snapshot-kwin-noanim
+# Protected mode (sudo tools/install-system): a root-owned system unit runs the
+# daemon; this script then only installs the per-user parts.
+PROTECTED=0
+[ -f /etc/systemd/system/snapshot-kwin.service ] && PROTECTED=1
 
 uninstall() {
   systemctl --user disable --now snapshot-kwin.service 2>/dev/null || true
@@ -52,8 +56,16 @@ from gi.repository import Gtk  # noqa: F401
 import cairo, dbus  # noqa: F401
 PY
 
+mkdir -p "$BIN" "$(dirname "$DESKTOP")" "$(dirname "$UNIT")"
+if [ "$PROTECTED" = 1 ]; then
+  # the system unit, its interpreter copy and its authorization .desktop live in
+  # /usr/local; a per-user copy of that .desktop would shadow it, so drop ours
+  systemctl --user disable --now snapshot-kwin.service >/dev/null 2>&1 || true
+  rm -f -- "$UNIT" "$DESKTOP"
+  rm -rf -- "$LIBEXEC"
+else
 # 1. dedicated interpreter copy (real path is what KWin checks)
-mkdir -p "$LIBEXEC" "$BIN" "$(dirname "$DESKTOP")" "$(dirname "$UNIT")"
+mkdir -p "$LIBEXEC"
 install -m 0755 "$(readlink -f "$(command -v python3)")" "$PY_COPY.new"
 mv -f "$PY_COPY.new" "$PY_COPY"
 PY_REAL="$(readlink -f "$PY_COPY")"
@@ -68,6 +80,7 @@ Exec=$PY_REAL -m snapshot_kwin.app
 NoDisplay=true
 X-KDE-DBUS-Restricted-Interfaces=org.kde.KWin.ScreenShot2
 EOF
+fi
 kbuildsycoca6 >/dev/null 2>&1 || true
 
 # 3. KWin window-geometry feed (click-to-capture)
@@ -86,23 +99,32 @@ else
 fi
 kwriteconfig6 --file kwinrc --group Plugins --key "${KWIN_EFFECT_ID}Enabled" true
 
-# 4. user service (Plasma session only; not started in gamescope/Game Mode)
+# 4. user service (Plasma session only; not started in gamescope/Game Mode).
+#    Always restarted, never given up on; the watchdog catches a hung main loop.
+if [ "$PROTECTED" = 0 ]; then
 cat > "$UNIT" <<EOF
 [Unit]
 Description=snapshot-kwin screenshot daemon
 PartOf=graphical-session.target
 After=graphical-session.target
+StartLimitIntervalSec=0
 
 [Service]
+Type=notify
+NotifyAccess=main
 Environment=PYTHONPATH=$SRC
 Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStart=$PY_REAL -m snapshot_kwin.app
-Restart=on-failure
+Restart=always
 RestartSec=1
+RestartSteps=4
+RestartMaxDelaySec=10
+WatchdogSec=30
 
 [Install]
 WantedBy=plasma-workspace.target
 EOF
+fi
 
 # 5. hotkey entry point
 cat > "$TRIGGER" <<EOF
@@ -114,6 +136,13 @@ chmod 0755 "$TRIGGER"
 printf '%s\n' '#!/bin/sh' 'exec busctl --user call io.github.geojol.SnapshotKwin /io/github/geojol/SnapshotKwin io.github.geojol.SnapshotKwin ShowHistory' > "$HISTORY"
 chmod 0755 "$HISTORY"
 
+if [ "$PROTECTED" = 1 ]; then  # needs the admin password (polkit)
+  SVC_START="pkexec systemctl enable --now snapshot-kwin.service"
+  SVC_STOP="pkexec systemctl disable --now snapshot-kwin.service"
+else
+  SVC_START="systemctl --user enable --now snapshot-kwin.service"
+  SVC_STOP="systemctl --user disable --now snapshot-kwin.service"
+fi
 # visible launcher: find it in the app menu / KRunner ("snapshot" or "截图");
 # right-click actions open the history and turn the daemon on and off
 cat > "$LAUNCHER" <<EOF
@@ -132,11 +161,11 @@ Exec=$BIN/snapshot-kwin-history
 
 [Desktop Action Start]
 Name=开启(常驻服务)
-Exec=systemctl --user enable --now snapshot-kwin.service
+Exec=$SVC_START
 
 [Desktop Action Stop]
 Name=关闭(停止并取消开机启动)
-Exec=systemctl --user disable --now snapshot-kwin.service
+Exec=$SVC_STOP
 EOF
 
 # hidden shortcut entries (kglobalaccel components) + silent shot CLI, then take
@@ -157,11 +186,14 @@ python3 "$SRC/tools/take-over-shortcuts" || echo "warning: shortcuts not taken o
 ln -sfn "$SRC/tools/term-paste" "$TERM_PASTE"
 
 systemctl --user daemon-reload
-systemctl --user enable snapshot-kwin.service >/dev/null
-systemctl --user restart snapshot-kwin.service
+if [ "$PROTECTED" = 0 ]; then
+  systemctl --user enable snapshot-kwin.service >/dev/null
+  systemctl --user restart snapshot-kwin.service
+fi
 # reload KWin scripts so the window feed starts now
 busctl --user call org.kde.KWin /KWin org.kde.KWin reconfigure >/dev/null 2>&1 || true
 busctl --user call org.kde.KWin /Scripting org.kde.kwin.Scripting start >/dev/null 2>&1 || true
 busctl --user call org.kde.KWin /Effects org.kde.kwin.Effects reconfigureEffect s "$KWIN_EFFECT_ID" >/dev/null 2>&1 \
   || busctl --user call org.kde.KWin /Effects org.kde.kwin.Effects loadEffect s "$KWIN_EFFECT_ID" >/dev/null 2>&1 || true
+[ "$PROTECTED" = 1 ] && echo "protected mode: the daemon is the system unit; update it with: sudo tools/install-system"
 echo "snapshot-kwin installed: Meta+Alt+1 / Print / Meta+Shift+Print capture, Meta+Shift+V history, snapshot-kwin-shot for scripts"

@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.0.6 — 2026-10-07
+
+- Service hardening: `Type=notify` with a 30 s watchdog (a hung main loop is
+  restarted, not just a crash), `Restart=always` with no start limit (1 s,
+  backing off to 10 s). Minimal built-in sd_notify, no new dependency.
+- Optional protected mode, `sudo tools/install-system`: a root-owned system unit
+  runs the daemon as the desktop user, so stopping or disabling it needs root;
+  code and the authorized interpreter are root-owned copies in /usr/local; the
+  interpreter copy is re-synced with python3 before every start; the unit waits
+  for the Plasma Wayland session (`python -m snapshot_kwin.launch`).
+
 ## v0.0.5 — 2026-10-07
 
 - Clipboard history recorded nothing copied elsewhere once the Plasma clipboard

@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+# Protected install: the daemon becomes a system service that only root can stop.
+#
+#   sudo tools/install-system              install / update (code is copied, root-owned)
+#   sudo tools/install-system --uninstall  back to nothing; then ./install.sh for per-user mode
+#
+# What changes compared with ./install.sh alone:
+# - /etc/systemd/system/snapshot-kwin.service runs the daemon as the desktop user.
+#   `systemctl stop/disable` needs root; `systemctl --user` no longer controls it.
+# - Code and the authorized interpreter copy live under /usr/local (root-owned),
+#   so nothing running as the user can change what the service runs; a git pull
+#   does not touch the running service either (re-run this script to update).
+# - Restart=always without a start limit; a process killed by the user comes back
+#   (1 s, backing off to at most 10 s if it keeps dying); WatchdogSec restarts a
+#   hung main loop; the interpreter copy is re-synced with /usr/bin/python3 before
+#   every start (OS updates change Python).
+# It then runs ./install.sh as the user for the per-user parts (KWin script and
+# effect, shortcuts, launchers), which detects the system unit and skips its own.
+set -euo pipefail
+
+[ "$(id -u)" = 0 ] || { echo "run with sudo" >&2; exit 1; }
+TARGET_USER="${SUDO_USER:-}"
+[ -n "$TARGET_USER" ] && [ "$TARGET_USER" != root ] || { echo "run via sudo from the desktop user" >&2; exit 1; }
+TARGET_UID="$(id -u "$TARGET_USER")"
+
+APP_ID=io.github.geojol.SnapshotKwin
+SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+LIB=/usr/local/lib/snapshot-kwin
+LIBEXEC=/usr/local/libexec/snapshot-kwin
+PY_COPY="$LIBEXEC/snapshot-kwin-python"
+REFRESH="$LIBEXEC/refresh-python"
+DESKTOP=/usr/local/share/applications/$APP_ID.desktop
+UNIT=/etc/systemd/system/snapshot-kwin.service
+
+as_user() {
+  runuser -u "$TARGET_USER" -- env XDG_RUNTIME_DIR="/run/user/$TARGET_UID" \
+    DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$TARGET_UID/bus" "$@"
+}
+
+if [ "${1:-}" = "--uninstall" ]; then
+  systemctl disable --now snapshot-kwin.service 2>/dev/null || true
+  rm -f -- "$UNIT" "$DESKTOP"
+  rm -rf -- "$LIB" "$LIBEXEC"
+  systemctl daemon-reload
+  echo "protected service removed; run ./install.sh (no sudo) for the per-user service"
+  exit 0
+fi
+
+# 1. root-owned code copy (only the package; replaced atomically)
+install -d -m 0755 "$LIB" "$LIBEXEC" "$(dirname "$DESKTOP")"
+rm -rf -- "$LIB/snapshot_kwin.new"
+cp -r "$SRC/snapshot_kwin" "$LIB/snapshot_kwin.new"
+find "$LIB/snapshot_kwin.new" -name __pycache__ -prune -exec rm -rf {} +
+chown -R root:root "$LIB/snapshot_kwin.new"
+chmod -R u=rwX,go=rX "$LIB/snapshot_kwin.new"
+rm -rf -- "$LIB/snapshot_kwin.old"
+[ -d "$LIB/snapshot_kwin" ] && mv "$LIB/snapshot_kwin" "$LIB/snapshot_kwin.old"
+mv "$LIB/snapshot_kwin.new" "$LIB/snapshot_kwin"
+rm -rf -- "$LIB/snapshot_kwin.old"
+
+# 2. interpreter copy, re-synced before every start (ExecStartPre, as root)
+cat > "$REFRESH" <<'EOF'
+#!/bin/sh
+# Keep the authorized interpreter copy identical to the system python3.
+set -eu
+dst=/usr/local/libexec/snapshot-kwin/snapshot-kwin-python
+src=$(readlink -f /usr/bin/python3)
+cmp -s "$src" "$dst" 2>/dev/null && exit 0
+install -m 0755 -o root -g root "$src" "$dst.new"
+mv -f "$dst.new" "$dst"
+echo "snapshot-kwin: interpreter copy refreshed from $src"
+EOF
+chmod 0755 "$REFRESH"
+"$REFRESH"
+
+# 3. KWin authorization for exactly that copy (screen capture API)
+cat > "$DESKTOP" <<EOF
+[Desktop Entry]
+Type=Application
+Name=snapshot-kwin
+Comment=Instant screenshot daemon for KDE Plasma (Wayland)
+Exec=$PY_COPY -m snapshot_kwin.app
+NoDisplay=true
+X-KDE-DBUS-Restricted-Interfaces=org.kde.KWin.ScreenShot2
+EOF
+chmod 0644 "$DESKTOP"
+
+# 4. the protected unit
+cat > "$UNIT" <<EOF
+[Unit]
+Description=snapshot-kwin screenshot daemon (protected: stopping it needs root)
+After=user@$TARGET_UID.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=$TARGET_USER
+Environment=PYTHONPATH=$LIB
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStartPre=+$REFRESH
+ExecStart=$PY_COPY -m snapshot_kwin.launch
+Restart=always
+RestartSec=1
+RestartSteps=4
+RestartMaxDelaySec=10
+TimeoutStartSec=infinity
+WatchdogSec=30
+
+[Install]
+WantedBy=multi-user.target
+EOF
+chmod 0644 "$UNIT"
+
+# 5. retire the per-user service (a second daemon would only hand over to the
+#    first anyway: one GApplication id per session bus)
+as_user systemctl --user disable --now snapshot-kwin.service >/dev/null 2>&1 || true
+
+# 6. per-user parts (KWin script/effect, shortcuts, launchers), as the user
+as_user "$SRC/install.sh"
+
+systemctl daemon-reload
+systemctl enable snapshot-kwin.service >/dev/null
+systemctl restart snapshot-kwin.service
+echo "snapshot-kwin protected service installed: sudo systemctl status snapshot-kwin"
