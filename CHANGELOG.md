@@ -1,102 +1,57 @@
-# Changelog
+# 更新日志
 
 ## v0.0.7 — 2026-10-07
 
-- Protected mode reduced to what it is for: a system unit that only root can
-  stop or disable, restarted when killed. Removed again: watchdog/sd_notify,
-  interpreter re-sync, root-owned code copy, restart back-off. The per-user unit
-  is back to the v0.0.5 one. The protected unit runs the checkout's code; only
-  the authorized interpreter copy lives in /usr/local/libexec (SELinux does not
-  let a system service execute files from a home directory).
+- 受保护模式只保留一个作用：服务的停止、禁用都需要 sudo，进程被杀掉后自动重新启动
+- 撤掉 v0.0.6 加的看门狗、解释器自动同步、root 所有的代码副本和逐步加长的重启间隔；用户级服务恢复成 v0.0.5 的配置
+- 受保护模式直接运行 clone 目录里的代码，改完代码后用 `sudo systemctl restart snapshot-kwin` 生效；只有解释器副本放在 `/usr/local/libexec/snapshot-kwin/`（SELinux 不允许系统服务执行家目录里的程序）
 
 ## v0.0.6 — 2026-10-07
 
-- Service hardening: `Type=notify` with a 30 s watchdog (a hung main loop is
-  restarted, not just a crash), `Restart=always` with no start limit (1 s,
-  backing off to 10 s). Minimal built-in sd_notify, no new dependency.
-- Optional protected mode, `sudo tools/install-system`: a root-owned system unit
-  runs the daemon as the desktop user, so stopping or disabling it needs root;
-  code and the authorized interpreter are root-owned copies in /usr/local; the
-  interpreter copy is re-synced with python3 before every start; the unit waits
-  for the Plasma Wayland session (`python -m snapshot_kwin.launch`).
+- 新增可选的受保护模式 `sudo tools/install-system`：守护进程改由系统级服务运行，停止、禁用都需要 root
+- 服务加了看门狗（主循环卡住 30 秒自动重启），并且总是重启、不设次数上限（这些在 v0.0.7 撤掉了）
 
 ## v0.0.5 — 2026-10-07
 
-- Clipboard history recorded nothing copied elsewhere once the Plasma clipboard
-  applet (and with it Klipper) was disabled. The daemon now watches the clipboard
-  itself with `wl-paste --watch` (KWin's ext-data-control; no focus needed) and
-  restarts the watcher if it exits; Klipper's signal remains a fallback.
-- No more skipping on `Gdk.Clipboard.is_local()`: on Wayland an unfocused client
-  is not told it lost the selection, so after a capture it could stay True.
-- A long text without spaces (URL, path) no longer sets the clipboard history
-  window's minimum width (it forced ~1360 px, so the window could not be narrowed).
+- 修复：Plasma 的剪贴板小部件（Klipper）停用后，别的程序复制的文字不再进入剪贴板历史。现在由守护进程自己监听剪贴板，不再依赖 Klipper；监听进程意外退出会自动重启
+- 修复：截过一次图之后，别的程序复制的内容可能都不被记录
+- 修复：历史里有一段没有空格的长文字（网址、路径）时，剪贴板历史窗口没法缩窄
+- 安装时检查 `wl-paste`（wl-clipboard）是否存在
 
 ## v0.0.4 — 2026-10-07
 
-First public release.
+首个公开版本。
 
-- Clipboard history window can be moved (drag the title strip) and resized (drag
-  an edge or corner); its geometry is remembered across opens (KWin reports it,
-  KWin restores it, since a Wayland client cannot place itself).
-- Clipboard history styling no longer depends on the GTK theme (the title strip
-  was drawn as a light headerbar and the list white under the default theme).
-- README rewritten in Chinese (English summary at the end) with real screenshots
-  taken in a nested headless KWin.
-- Enter in the clipboard history moves the confirmed entry to the top of the
-  history as well as onto the clipboard, so Meta+V keeps pasting it.
-
-- Replaces Spectacle for screenshots: `tools/take-over-shortcuts` gives Print,
-  Meta+Shift+Print and Meta+Alt+1 to snapshot-kwin (Meta+Shift+S stays Save As) and clears
-  Spectacle's screenshot keys (recording untouched). Run by `install.sh`.
-- `snapshot-kwin-shot`: silent whole-desktop PNG via the new `ShotToFile` D-Bus method.
-- Visible launcher (search 截图 / snapshot) with history / on / off actions;
-  `install.sh` now creates every entry it relies on.
-- Clipboard history rows can be dragged out (images as `text/uri-list` + path + `image/png`, text as text). No GdkFileList: its portal transfer fails in Ghostty.
-- Clipboard history window closes (is destroyed) after paste, edit, drag-out, Esc, or
-  a click elsewhere, and is created fresh on every open: a hidden window re-shown
-  by Meta+Shift+V was often not activated. Meta+Shift+V while it is open brings
-  it to the front (KWin activation).
-- `tools/term-paste`: Meta+V in a terminal pastes text or images into the active
-  tmux pane (Ctrl+V for Claude Code, a saved PNG path elsewhere); linked by `install.sh`.
+- 剪贴板历史窗口可以拖动（拖顶部「剪贴板历史」那一条）、可以调整大小（拖边或角），下次打开时恢复上次的位置和大小
+- 在剪贴板历史里按 Enter，选中的条目成为当前剪贴板内容，同时排到第一条，之后按粘贴键还是它
+- 剪贴板历史的配色不再受系统主题影响（默认主题下标题条是浅灰色、列表是白底）
+- 取代 Spectacle 的截图功能：Print、Meta+Shift+Print、Meta+Alt+1 交给 snapshot-kwin，清掉 Spectacle 的截图快捷键（录屏不动；Meta+Shift+S 保持为「另存为」）
+- 新增 `snapshot-kwin-shot`：给脚本用，静默保存整个桌面，不显示界面，也不动剪贴板
+- 应用菜单里能搜到「截图」/ snapshot，右键可以打开剪贴板历史、开启或关闭服务
+- 剪贴板历史里的条目可以直接拖出去：图片以 PNG 文件拖出（终端里得到路径，浏览器、聊天软件里是附件），文字以文字拖出
+- 剪贴板历史在粘贴、编辑、拖出、Esc 或点别的窗口后关闭；已经打开时再按 Meta+Shift+V 会把它提到最前（修复有时按了不出现的问题）
+- 新增 `term-paste`：终端里粘贴文字或图片，支持 tmux（Claude Code 里发 Ctrl+V，其他程序粘贴保存后的图片路径）
+- README 改为中文，附在隔离环境里实际截取的效果图
 
 ## v0.0.3 — 2026-10-06
 
-- Long capture scrolls the pane under the *center* of the selection: the pointer
-  is parked there (closed-loop positioning that adapts to pointer acceleration)
-  and restored afterwards. Fixes split layouts where the drag ended over a
-  different pane. Cursor reads time out after 1 s, so a capture never hangs.
+- 长图会滚动选区**中心**下方的窗格：先把鼠标移到那里，截完再移回原位。修复分屏布局下滚错窗格的问题
+- 读取鼠标位置最多等 1 秒，截图不会卡住
 
 ## v0.0.2 — 2026-10-06
 
-- Long (scrolling) capture: press L in the overlay, drag the content area or
-  click a window; auto-scrolls and stitches (robust to translucent windows,
-  sticky headers/footers kept once). Second hotkey press stops it.
-- Editor: drag any annotation to move it; select/move tool (V); Delete removes
-  the selection; color/width restyle it. Crop box with 8 handles, move, thirds
-  guides and ratios (free, 1:1, 4:3, 3:4, 16:9, 9:16, 3:2). Icon-only toolbar
-  with 1 s hover tips; no status line.
-- History: retention by age (183 days) and size (5 GiB of images), configurable
-  in ~/.config/snapshot-kwin/config.json; captures stored once (v0.0.1
-  duplicates migrated); picker renders the newest 300 rows, search covers all.
-- No open/close animation for snapshot-kwin's windows; CJK overlay hints via
-  Pango; captures were missing from history (self-owned selection) — fixed.
-- Tests: isolated end-to-end suite in a nested invisible KWin (never touches the
-  desktop; own mount namespace, so the desktop's Flatpak document portal stays
-  mounted), run on demand before committing; 23 unit tests.
+- 长图：冻结画面后按 L，拖选内容区域或点击窗口，自动滚动并拼接（半透明窗口也能拼；固定的顶栏、底栏只保留一次）；再按一次截图键停止
+- 编辑器：任何标注都可以拖动；新增选择/移动工具（V），Delete 删除选中的标注，改颜色、粗细会作用到选中的标注；裁剪框带 8 个控制点、三分线和固定比例（自由、1:1、4:3、3:4、16:9、9:16、3:2）；工具栏只显示图标，悬停 1 秒出提示
+- 历史默认保留半年、图片最多 5 GiB，可在 `~/.config/snapshot-kwin/config.json` 修改；每张截图只存一份；列表显示最新 300 条，搜索覆盖全部
+- snapshot-kwin 自己的窗口没有打开/关闭动画；冻结画面上的中文提示正常显示
+- 修复：截图没有出现在剪贴板历史里
+- 新增端到端测试，在隔离的嵌套 KWin 里运行，不影响桌面
 
 ## v0.0.1 — 2026-10-06
 
-First private release.
+首个版本（当时未公开）。
 
-- Instant capture on KDE Plasma 6 Wayland: hotkey → frozen screen in ~150 ms
-  (KWin ScreenShot2 grab ~60 ms). Drag = region, click = whole window. The image
-  goes straight to the clipboard; no editor popup.
-- Clipboard history (text + images), ordered and de-duplicated, recorded via
-  Klipper's change signal; instant picker (Enter pastes into the focused window).
-- Editor opened by double-clicking an image in the history: pen, highlighter,
-  line, arrow, rectangle, ellipse, text (CJK), numbered stamps, mosaic, eraser,
-  select/move; crop box with handles and ratios; rotate/flip; undo/redo; Enter
-  puts the result on the clipboard as item #1.
-- No open/close animation for snapshot-kwin's own windows (scoped KWin effect).
-- Per-user install script; only a private interpreter copy is authorized for the
-  restricted KWin screenshot API.
+- KDE Plasma 6 Wayland 上按键约 0.15 秒冻结画面；拖框截选区，单击截整个窗口；图片直接进剪贴板，不弹编辑器
+- 剪贴板历史（文字 + 图片），按时间排列、自动去重；Enter 粘贴到当前窗口
+- 在剪贴板历史里双击图片打开编辑器：画笔、荧光笔、直线、箭头、矩形、椭圆、文字（支持中文）、编号、马赛克、橡皮、选择/移动；裁剪、旋转、翻转；撤销/重做；Enter 把结果放进剪贴板并排到历史第一条
+- 用户目录安装脚本；截图接口只授权给一份专用的解释器副本
