@@ -113,7 +113,7 @@ cd snapshot-kwin
 终端只能粘贴文字。安装脚本放了一个 `~/.local/bin/term-paste`，把终端的粘贴键绑定到它（需要 tmux）：剪贴板是文字就粘贴文字；是图片时，如果当前 tmux 窗格是 Claude Code 就发 Ctrl+V，否则把 PNG 存到 `~/.local/state/snapshot-kwin/paste/` 再粘贴路径。
 
 **Plasma 的剪贴板小部件（Klipper）要开着吗？**
-不需要。snapshot-kwin 自己监听剪贴板（需要 `wl-paste`，即 wl-clipboard）。在 Klipper 停用的桌面上实测过能正常记录文字和图片。
+不需要。snapshot-kwin 自己监听剪贴板（需要 `wl-paste`，即 wl-clipboard）。在没有 Klipper 的嵌套 KWin 里由端到端测试验证过：别的程序复制的文字能被记录。
 
 **历史会占多少空间？**
 默认保留半年、图片最多 5 GiB，超出时先删最旧的。可以在 `~/.config/snapshot-kwin/config.json` 里修改：
