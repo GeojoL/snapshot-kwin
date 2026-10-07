@@ -42,7 +42,7 @@ uninstall() {
 }
 [ "${1:-}" = "--uninstall" ] && { uninstall; exit 0; }
 
-for cmd in python3 kpackagetool6 kwriteconfig6 busctl systemctl; do
+for cmd in python3 kpackagetool6 kwriteconfig6 busctl systemctl wl-paste; do
   command -v "$cmd" >/dev/null || { echo "missing: $cmd" >&2; exit 1; }
 done
 python3 - <<'PY'

@@ -1,10 +1,11 @@
 """Clipboard history (text + images) and the picker window.
 
-KWin does not expose a data-control protocol, so an ordinary client cannot watch
-the clipboard in the background. Klipper (Plasma's clipboard service) can, and
-emits org.kde.klipper.klipper.clipboardHistoryUpdated on every change; on that
-signal we read the current selection with wl-paste and record it with a
-timestamp, so text and images share one ordered history.
+KWin offers ext-data-control, so `wl-paste --watch` (started by the daemon)
+reports every clipboard change even though we are not focused; Klipper's
+org.kde.klipper.klipper.clipboardHistoryUpdated signal is a fallback (Klipper
+does not run when the Plasma clipboard applet is disabled). On a change we read
+the current selection with wl-paste and record it with a timestamp, so text and
+images share one ordered history.
 
 Picker: Enter makes the selected entry the current clipboard content (and the
 newest history entry), then pastes it into the previously focused window, so a
@@ -183,6 +184,7 @@ class History:
             if got is not None:
                 kind, payload, text = got
                 self._add(kind, payload, text=text)
+                self.log(f"recorded {kind} ({len(payload)} bytes)")
             if done:
                 done()
             return False
@@ -351,8 +353,10 @@ class Picker:
                 row.set_child(pic)
             else:
                 text = " ".join(item["text"].split())
+                # WORD_CHAR: a long unbroken token (URL, path) must still break,
+                # or its width becomes the window's minimum width
                 lbl = Gtk.Label(label=text[:400], xalign=0, wrap=True, lines=2,
-                                ellipsize=Pango.EllipsizeMode.END)
+                                wrap_mode=Pango.WrapMode.WORD_CHAR, ellipsize=Pango.EllipsizeMode.END)
                 row.set_child(lbl)
             drag = Gtk.DragSource(actions=Gdk.DragAction.COPY)
             drag.connect("prepare", self._drag_prepare, item)

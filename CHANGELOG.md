@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.0.5 — 2026-10-07
+
+- Clipboard history recorded nothing copied elsewhere once the Plasma clipboard
+  applet (and with it Klipper) was disabled. The daemon now watches the clipboard
+  itself with `wl-paste --watch` (KWin's ext-data-control; no focus needed) and
+  restarts the watcher if it exits; Klipper's signal remains a fallback.
+- No more skipping on `Gdk.Clipboard.is_local()`: on Wayland an unfocused client
+  is not told it lost the selection, so after a capture it could stay True.
+- A long text without spaces (URL, path) no longer sets the clipboard history
+  window's minimum width (it forced ~1360 px, so the window could not be narrowed).
+
 ## v0.0.4 — 2026-10-07
 
 First public release.

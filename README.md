@@ -21,7 +21,7 @@ snapshot-kwin 让一个小的 GTK4 进程常驻，框选界面提前建好，按
 
 下面的步骤在作者的 Bazzite（Fedora 44 + KDE Plasma 6.7.5 Wayland）上实际执行过；其他发行版没有测试过（见[适用范围](#适用范围)）。
 
-**第 1 步：确认依赖。** 需要 Plasma 6 Wayland 会话，以及 `python3` 的 GTK 4 绑定（`gi`）、`pycairo`、`dbus-python`，还有 Plasma 自带的 `kpackagetool6`、`kwriteconfig6`。Bazzite 已自带全部依赖，不用另外安装。在 Fedora 上对应的包名是 `python3-gobject gtk4 python3-cairo python3-dbus`（只在 Bazzite 上核对过这几个包已经装好，在普通 Fedora 上按这个包名安装未测试）。
+**第 1 步：确认依赖。** 需要 Plasma 6 Wayland 会话，以及 `python3` 的 GTK 4 绑定（`gi`）、`pycairo`、`dbus-python`、`wl-clipboard`（提供 `wl-paste`），还有 Plasma 自带的 `kpackagetool6`、`kwriteconfig6`。Bazzite 已自带全部依赖，不用另外安装。在 Fedora 上对应的包名是 `python3-gobject gtk4 python3-cairo python3-dbus wl-clipboard`（只在 Bazzite 上核对过这几个包已经装好，在普通 Fedora 上按这个包名安装未测试）。
 
 **第 2 步：下载到一个长期存放的目录，然后运行安装脚本**（不需要 sudo）
 
@@ -92,7 +92,7 @@ cd snapshot-kwin
 | 环境 | 状态 | 怎么测的 |
 |---|---|---|
 | Bazzite 44（Fedora 44）+ KDE Plasma 6.7.5 Wayland，单屏 2560×1440，100% 缩放 | ✅ | 作者日常使用；按本文第 2 步安装 |
-| 嵌套的 `kwin_wayland --virtual`（KWin 6.7.5） | ✅ | `tests/e2e/run.sh` 的 13 项端到端测试全部通过：选区、点窗口、长图、编辑器、剪贴板历史的打开/关闭/确认/位置恢复 |
+| 嵌套的 `kwin_wayland --virtual`（KWin 6.7.5） | ✅ | `tests/e2e/run.sh` 的 15 项端到端测试全部通过：选区、点窗口、长图、编辑器、剪贴板历史的打开/关闭/确认/位置恢复、没有 Klipper 时记录别的程序复制的文字、监听进程被杀后自动恢复 |
 | 多显示器、分数缩放 | 未测试 | |
 | 其他发行版、Plasma 5、X11 会话、GNOME 等其他桌面 | 未测试 | 依赖 KWin 6 的 Wayland 截图接口，X11 和其他桌面基本不可能直接用 |
 
@@ -110,7 +110,10 @@ cd snapshot-kwin
 默认发 Meta+V。作者用按键映射工具把 Meta+V 按应用翻译成各自的粘贴键（macOS 式习惯）。直接用 Ctrl+V 的话，可以通过服务的环境变量 `SNAPSHOT_KWIN_PASTE_KEYS` 改成 `29:1 47:1 47:0 29:0`（Ctrl+V 的 ydotool 键码）；这个改法未实测。
 
 **终端里能粘贴图片吗？**
-终端只能粘贴文字。安装脚本放了一个 `~/.local/bin/term-paste`，把终端的粘贴键绑定到它（需要 `wl-paste` 和 tmux）：剪贴板是文字就粘贴文字；是图片时，如果当前 tmux 窗格是 Claude Code 就发 Ctrl+V，否则把 PNG 存到 `~/.local/state/snapshot-kwin/paste/` 再粘贴路径。
+终端只能粘贴文字。安装脚本放了一个 `~/.local/bin/term-paste`，把终端的粘贴键绑定到它（需要 tmux）：剪贴板是文字就粘贴文字；是图片时，如果当前 tmux 窗格是 Claude Code 就发 Ctrl+V，否则把 PNG 存到 `~/.local/state/snapshot-kwin/paste/` 再粘贴路径。
+
+**Plasma 的剪贴板小部件（Klipper）要开着吗？**
+不需要。snapshot-kwin 自己监听剪贴板（需要 `wl-paste`，即 wl-clipboard）。在 Klipper 停用的桌面上实测过能正常记录文字和图片。
 
 **历史会占多少空间？**
 默认保留半年、图片最多 5 GiB，超出时先删最旧的。可以在 `~/.config/snapshot-kwin/config.json` 里修改：
@@ -122,13 +125,12 @@ cd snapshot-kwin
 ## 已知限制
 
 - 只测试过单显示器、100% 缩放。
-- 剪贴板里的文字记录依赖 Klipper（Plasma 自带的剪贴板服务）发出的变化信号；Klipper 没有运行时只会记录本工具自己截的图。
 - 卸载后 Spectacle 的截图快捷键不会自动恢复。
 - 代码必须留在 clone 的目录里，移动目录后要重新运行 `./install.sh`。
 
 ## 原理（给开发者）
 
-截图用的是 KWin 受限的 `org.kde.KWin.ScreenShot2` D-Bus 接口。KWin 按调用者可执行文件的真实路径，去匹配声明了 `X-KDE-DBUS-Restricted-Interfaces` 的 `.desktop` 文件，所以安装脚本只授权一份专用的解释器副本，系统里的其他 Python 脚本不会因此获得截屏权限。常驻的 KWin 脚本在窗口变化时把窗口位置推给守护进程，点选窗口无需再查询；剪贴板历史窗口的位置和大小也由它回报。一个只作用于本工具窗口的 KWin 效果去掉了打开/关闭动画。界面是 Python + GTK4 + cairo，全部使用发行版自带的包。
+截图用的是 KWin 受限的 `org.kde.KWin.ScreenShot2` D-Bus 接口。KWin 按调用者可执行文件的真实路径，去匹配声明了 `X-KDE-DBUS-Restricted-Interfaces` 的 `.desktop` 文件，所以安装脚本只授权一份专用的解释器副本，系统里的其他 Python 脚本不会因此获得截屏权限。剪贴板变化由守护进程启动的 `wl-paste --watch` 监听（KWin 提供 ext-data-control 协议，不需要窗口焦点，也不依赖 Klipper），监听进程退出会自动重启。常驻的 KWin 脚本在窗口变化时把窗口位置推给守护进程，点选窗口无需再查询；剪贴板历史窗口的位置和大小也由它回报。一个只作用于本工具窗口的 KWin 效果去掉了打开/关闭动画。界面是 Python + GTK4 + cairo，全部使用发行版自带的包。
 
 测试：`python3 -m unittest discover -s tests` 跑单元测试；`tests/e2e/run.sh` 在独立的 D-Bus 会话、独立挂载命名空间里启动不可见的嵌套 KWin 跑端到端测试，不碰你的桌面、焦点、输入和剪贴板。设计记录见 [docs/design-notes.zh.md](docs/design-notes.zh.md)。
 

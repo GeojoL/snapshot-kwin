@@ -434,6 +434,7 @@ class App(Gtk.Application):
         self.picker = Picker(self, self.history, on_paste=self._paste_into_focused, on_edit=self._edit_image,
                              on_raise=self._activate_window, on_place=self._place_window, log=_log)
         self.editor = Editor(self, on_done=self._edit_done)
+        self._watch_clipboard()
         self._watch_klipper()
         GLib.idle_add(self.picker.prerender)
         GLib.idle_add(self._reload_window_feed)
@@ -608,6 +609,45 @@ class App(Gtk.Application):
         return False
 
     # ── clipboard history ────────────────────────────────────
+    def _watch_clipboard(self, delay_s=1):
+        """Record every clipboard change, without Klipper and without focus.
+
+        KWin offers ext-data-control, so `wl-paste --watch` runs a command on every
+        selection change even though we are not focused. The command drains the
+        offered data and prints a line; each line triggers one record. If the
+        watcher ever exits it is restarted (1 s, doubling up to 30 s while it keeps
+        failing fast), so recording never silently stops. Klipper's signal (below)
+        stays as a fallback; Klipper does not run when the Plasma clipboard applet
+        is disabled."""
+        try:
+            proc = Gio.Subprocess.new(["wl-paste", "--watch", "sh", "-c", "cat >/dev/null; echo"],
+                                      Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE)
+        except GLib.Error as e:
+            _log(f"clipboard watch failed to start: {e.message}; retry in {delay_s} s")
+            GLib.timeout_add_seconds(delay_s, lambda: self._watch_clipboard(min(delay_s * 2, 30)) and False)
+            return False
+        self._clip_watch = proc
+        started = time.time()
+        stream = Gio.DataInputStream.new(proc.get_stdout_pipe())
+
+        def on_line(src, res):
+            try:
+                line, _len = src.read_line_finish_utf8(res)
+            except GLib.Error:
+                line = None
+            if line is None:  # watcher exited
+                proc.force_exit()
+                lived = time.time() - started
+                nxt = 1 if lived > 60 else min(delay_s * 2, 30)
+                _log(f"clipboard watch ended after {lived:.0f} s; restarting in {nxt} s")
+                GLib.timeout_add_seconds(nxt, lambda: self._watch_clipboard(nxt) and False)
+                return
+            GLib.timeout_add(120, self._record_clipboard)
+            src.read_line_async(GLib.PRIORITY_DEFAULT, None, on_line)
+        stream.read_line_async(GLib.PRIORITY_DEFAULT, None, on_line)
+        _log(f"clipboard watch started (wl-paste --watch, pid {proc.get_identifier()})")
+        return False
+
     def _watch_klipper(self):
         try:
             self.capture._bus.add_signal_receiver(
@@ -650,9 +690,10 @@ class App(Gtk.Application):
         _log(f"migrated legacy captures: {len(legacy)} file(s), {imported} imported, duplicates removed")
 
     def _record_clipboard(self):
-        # Our own captures/edits are recorded directly; skip when we own the selection.
-        if Gdk.Display.get_default().get_clipboard().is_local():
-            return False
+        # Do not skip on Gdk.Clipboard.is_local(): on Wayland an unfocused client
+        # is never told it lost the selection, so after our first capture it stayed
+        # True and every later copy elsewhere was ignored. Reading happens off the
+        # main thread (no self-owned deadlock) and equal content is de-duplicated.
         self.history.record_current_async(done=self.picker.prerender)
         return False
 
