@@ -19,8 +19,20 @@ function snapshot() {
     callDBus(SERVICE, PATH, IFACE, "UpdateWindows", JSON.stringify(out));
 }
 
+// The clipboard history picker is a Wayland client and cannot place itself, so
+// KWin tells the daemon where the user moved/resized it; it is restored on reopen.
+const PICKER_TITLE = "snapshot-kwin-clipboard";
+
+function reportPicker(w) {
+    const g = w.frameGeometry;
+    callDBus(SERVICE, PATH, IFACE, "PickerGeometry", JSON.stringify({ x: g.x, y: g.y, w: g.width, h: g.height }));
+}
+
 function watch(w) {
     if (!w) return;
+    if (w.caption === PICKER_TITLE) {
+        w.interactiveMoveResizeFinished.connect(function () { reportPicker(w); });
+    }
     w.frameGeometryChanged.connect(snapshot);
     w.minimizedChanged.connect(snapshot);
 }

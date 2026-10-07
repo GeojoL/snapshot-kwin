@@ -78,15 +78,20 @@ Retention defaults to half a year and 5 GiB of images; override in
 ## Clipboard history: paste and drag
 
 Open the history (bind a shortcut to `~/.local/bin/snapshot-kwin-history`).
-Enter pastes into the previous window; Shift+Enter or double-click edits an image.
+Enter makes the selected row the current clipboard content and the newest history
+entry, then pastes it into the previous window; a later Meta+V pastes it again.
+Shift+Enter or double-click edits an image.
+Drag the 剪贴板历史 strip at the top to move the window and any edge or corner to
+resize it; KWin reports the new geometry and the next open restores it
+(`~/.local/state/snapshot-kwin/picker.json`).
 Rows can be **dragged out**: an image drops as its PNG file (a path in a terminal,
 an attachment in a browser or chat) and also offers raw `image/png`; text drops as text.
 
 ### Pasting images in a terminal (`tools/term-paste`)
 
 Terminals paste only text, so `install.sh` links `~/.local/bin/term-paste`; bind
-your terminal's paste key to it (for example: xremap maps Meta+V in Ghostty, see
-profilo `linux/xremap/config.yml`). It works through tmux and sends no synthetic keys:
+your terminal's paste key to it (for example an xremap mapping of Meta+V in Ghostty,
+see profilo `linux/xremap/config.yml`). It works through tmux and sends no synthetic keys:
 
 | Clipboard | Active tmux pane | Result |
 |---|---|---|

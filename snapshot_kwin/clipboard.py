@@ -6,10 +6,13 @@ emits org.kde.klipper.klipper.clipboardHistoryUpdated on every change; on that
 signal we read the current selection with wl-paste and record it with a
 timestamp, so text and images share one ordered history.
 
-Picker: Enter pastes into the previously focused window; double-click an image
-to edit it (double-click text pastes it); Shift+Enter also edits; Esc closes;
-typing filters text entries. Picking, editing, dragging out or clicking another
-window closes (destroys) the picker; opening it while open brings it to the front.
+Picker: Enter makes the selected entry the current clipboard content (and the
+newest history entry), then pastes it into the previously focused window, so a
+later Meta+V pastes it again; double-click an image to edit it (double-click text
+pastes it); Shift+Enter also edits; Esc closes; typing filters text entries.
+Picking, editing, dragging out or clicking another window closes (destroys) the
+picker; opening it while open brings it to the front. Drag the title strip to
+move it, drag an edge or corner to resize it; size and position are remembered.
 """
 import hashlib
 import json
@@ -23,13 +26,17 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
-from gi.repository import Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
+gi.require_version("Graphene", "1.0")
+from gi.repository import Gdk, Gio, GLib, Graphene, Gtk, Pango  # noqa: E402
 
 # Retention (overridable in ${XDG_CONFIG_HOME:-~/.config}/snapshot-kwin/config.json):
 #   {"max_age_days": 183, "max_bytes": 5368709120}
 DEFAULT_MAX_AGE_DAYS = 183           # about half a year
 DEFAULT_MAX_BYTES = 5 * 1024 ** 3    # 5 GiB of stored images
 PICKER_ROWS = 300                    # newest rows rendered in the picker (search covers all)
+PICKER_SIZE = (760, 560)             # first-open size; afterwards the last one used
+PICKER_MIN = (360, 240)
+RESIZE_GRIP = 8                      # px along each edge that resizes the picker
 
 
 def load_config():
@@ -149,6 +156,14 @@ class History:
         self.items.sort(key=lambda i: i["ts"], reverse=True)
         self._save()
 
+    def touch(self, item):
+        """Make an existing entry the newest one (it was just put on the clipboard)."""
+        if item in self.items:
+            self.items.remove(item)
+            item["ts"] = time.time()
+            self.items.insert(0, item)
+            self._save()
+
     def add_image(self, png: bytes):
         """Record an image we produced ourselves (a capture or an edit)."""
         self._add("image", png)
@@ -201,13 +216,16 @@ class Picker:
     moving elsewhere). A re-shown hidden window is not reliably activated by KWin,
     a new one is, so every open gets a fresh toplevel."""
 
-    def __init__(self, app, history, on_paste, on_edit, on_raise, log=lambda _m: None):
+    def __init__(self, app, history, on_paste, on_edit, on_raise, on_place=lambda _t, _g: None,
+                 log=lambda _m: None):
         self.app = app
         self.log = log
         self.history = history
         self.on_paste = on_paste
         self.on_edit = on_edit
         self.on_raise = on_raise  # on_raise(title): ask KWin to activate that window
+        self.on_place = on_place  # on_place(title, {x,y,w,h}): ask KWin to move/resize it
+        self.geometry = self._load_geometry()  # KWin frame geometry {"x","y","w","h"} after a move/resize
         self.win = None
         self._dragging = False
         self._rendered_version = -1
@@ -219,10 +237,15 @@ class Picker:
             .snapshot-kwin-picker row { padding: 8px 12px; color: #cdd6f4; }
             .snapshot-kwin-picker row:selected { background: #313244; border-radius: 8px; }
             .snapshot-kwin-picker .hint { color: #7f849c; margin: 6px 12px 10px; font-size: 0.9em; }
+            .snapshot-kwin-picker .titlebar { color: #7f849c; font-size: 0.85em; padding: 6px 12px 0; }
         """)
         Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
         self.box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        # undecorated window: this strip moves it (Gtk.WindowHandle starts a compositor move)
+        handle = Gtk.WindowHandle()
+        handle.set_child(Gtk.Label(label="剪贴板历史", xalign=0, css_classes=["titlebar"]))
+        self.box.append(handle)
         self.search = Gtk.SearchEntry(placeholder_text="搜索文字…")
         self.search.connect("search-changed", lambda *_: self._on_search())
         self.box.append(self.search)
@@ -237,6 +260,66 @@ class Picker:
 
     def get_visible(self):
         return self.win is not None
+
+    # ── geometry (remembered across opens) ───────────────────
+    @staticmethod
+    def _geometry_file():
+        return state_dir().parent / "picker.json"
+
+    def _load_geometry(self):
+        try:
+            g = json.loads(self._geometry_file().read_text())
+            return {k: int(g[k]) for k in ("x", "y", "w", "h") if k in g}
+        except (OSError, ValueError, TypeError):
+            return {}
+
+    def _save_geometry(self):
+        tmp = self._geometry_file().with_suffix(".tmp")
+        tmp.write_text(json.dumps(self.geometry))
+        os.replace(tmp, self._geometry_file())
+
+    def set_frame_geometry(self, x, y, w, h):
+        """KWin's report of where the open picker is (after a move or resize)."""
+        if self.win is None or w < PICKER_MIN[0] or h < PICKER_MIN[1]:
+            return
+        g = {"x": x, "y": y, "w": w, "h": h}
+        self.log(f"picker geometry {x},{y} {w}x{h}")
+        if g != self.geometry:
+            self.geometry = g
+            self._save_geometry()
+
+    def _add_resize_edges(self, win, overlay):
+        """Undecorated GTK windows have no resize border; add invisible grips that
+        hand the drag to the compositor (xdg_toplevel.resize)."""
+        E = Gdk.SurfaceEdge
+        g = RESIZE_GRIP
+        specs = [  # edge, cursor, halign, valign, width, height
+            (E.NORTH_WEST, "nw-resize", Gtk.Align.START, Gtk.Align.START, g, g),
+            (E.NORTH_EAST, "ne-resize", Gtk.Align.END, Gtk.Align.START, g, g),
+            (E.SOUTH_WEST, "sw-resize", Gtk.Align.START, Gtk.Align.END, g, g),
+            (E.SOUTH_EAST, "se-resize", Gtk.Align.END, Gtk.Align.END, g, g),
+            (E.NORTH, "n-resize", Gtk.Align.FILL, Gtk.Align.START, -1, g),
+            (E.SOUTH, "s-resize", Gtk.Align.FILL, Gtk.Align.END, -1, g),
+            (E.WEST, "w-resize", Gtk.Align.START, Gtk.Align.FILL, g, -1),
+            (E.EAST, "e-resize", Gtk.Align.END, Gtk.Align.FILL, g, -1),
+        ]
+        for edge, cursor, ha, va, w, h in reversed(specs):  # corners on top
+            grip = Gtk.Box(halign=ha, valign=va, cursor=Gdk.Cursor.new_from_name(cursor, None))
+            grip.set_size_request(w, h)
+            click = Gtk.GestureClick(button=Gdk.BUTTON_PRIMARY)
+            click.connect("pressed", self._begin_resize, edge, win)
+            grip.add_controller(click)
+            overlay.add_overlay(grip)
+
+    @staticmethod
+    def _begin_resize(gesture, _n, x, y, edge, win):
+        ok, pt = gesture.get_widget().compute_point(win, Graphene.Point().init(x, y))
+        surface = win.get_surface()
+        if not ok or surface is None:
+            return
+        gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+        surface.begin_resize(edge, gesture.get_device(), Gdk.BUTTON_PRIMARY, pt.x, pt.y,
+                             gesture.get_current_event_time())
 
     # ── content ──────────────────────────────────────────────
     def _on_search(self):
@@ -331,8 +414,11 @@ class Picker:
             first = self.listbox.get_row_at_index(0)
             if first:
                 self.listbox.select_row(first)
+        w = max(PICKER_MIN[0], self.geometry.get("w", PICKER_SIZE[0]))
+        h = max(PICKER_MIN[1], self.geometry.get("h", PICKER_SIZE[1]))
         win = Gtk.Window(application=self.app, title=PICKER_TITLE, decorated=False,
-                         default_width=760, default_height=560, resizable=False)
+                         default_width=w, default_height=h, resizable=True)
+        win.set_size_request(*PICKER_MIN)
         win.add_css_class("snapshot-kwin-picker")
         keys = Gtk.EventControllerKey()
         keys.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
@@ -340,9 +426,14 @@ class Picker:
         win.add_controller(keys)
         win.connect("notify::is-active", self._on_active_changed)
         win.connect("close-request", lambda *_: self.close_picker("close-request") or True)
-        win.set_child(self.box)
+        overlay = Gtk.Overlay(child=self.box)
+        self._add_resize_edges(win, overlay)
+        win.set_child(overlay)
         self.win = win
         win.present()
+        if "x" in self.geometry:
+            # Wayland clients cannot place themselves; KWin puts it where it was left
+            self.on_place(PICKER_TITLE, {"x": self.geometry["x"], "y": self.geometry["y"], "w": w, "h": h})
         self.listbox.grab_focus()
         first = self.listbox.get_selected_row()
         if first:
@@ -372,7 +463,10 @@ class Picker:
         win, self.win = self.win, None
         if win is None:
             return
-        win.set_child(None)  # keep the rendered list for the next open
+        overlay = win.get_child()
+        if overlay is not None:
+            overlay.set_child(None)  # keep the rendered list for the next open
+        win.set_child(None)
         win.destroy()
         self.log(f"history closed ({reason})")
 
@@ -418,5 +512,6 @@ class Picker:
             clip.set_content(Gdk.ContentProvider.new_for_bytes("image/png", GLib.Bytes.new(data)))
         else:
             clip.set(item["text"])
+        self.history.touch(item)  # the confirmed entry is now the newest one
         self.close_picker("paste")
         self.on_paste(item)

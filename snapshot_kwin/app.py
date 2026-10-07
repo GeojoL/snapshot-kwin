@@ -50,7 +50,11 @@ DBUS_XML = f"""
     <method name="ShowHistory"/>
     <method name="ShotToFile"><arg type="s" name="path" direction="in"/><arg type="s" name="result" direction="out"/></method>
     <method name="ReportCursor"><arg type="i" name="x"/><arg type="i" name="y"/></method>
+    <!-- from the KWin window feed script: the history picker was moved or resized -->
+    <method name="PickerGeometry"><arg type="s" name="json" direction="in"/></method>
     <method name="TestHideHistory"/>
+    <!-- confirm row i of the open picker like Enter, without sending the paste keys -->
+    <method name="TestConfirmRow"><arg type="i" name="i"/></method>
     <method name="TestReadCursor"/>
     <method name="TestEditLatest"/>
     <method name="TestEditorArrowAndFinish"/>
@@ -319,6 +323,14 @@ class App(Gtk.Application):
             except (ValueError, TypeError):
                 pass
             invocation.return_value(None)
+        elif method == "PickerGeometry":
+            invocation.return_value(None)
+            try:
+                g = json.loads(params.unpack()[0])
+                x, y, w, h = (int(round(g[k])) for k in ("x", "y", "w", "h"))
+            except (ValueError, TypeError, KeyError):
+                return
+            GLib.idle_add(lambda: self.picker.set_frame_geometry(x, y, w, h) or False)
         elif method == "Capture":
             invocation.return_value(None)
             GLib.idle_add(self.trigger)
@@ -373,10 +385,27 @@ class App(Gtk.Application):
         elif method == "TestHideHistory":
             invocation.return_value(None)
             GLib.idle_add(lambda: self.picker.close_picker("test") or False)
+        elif method == "TestConfirmRow":
+            (i,) = params.unpack()
+            invocation.return_value(None)
+            GLib.idle_add(self._test_confirm_row, i)
         elif method in ("TestSelect", "TestClick"):
             args = params.unpack()
             invocation.return_value(None)
             GLib.idle_add(self._test_input, method, args)
+
+    def _test_confirm_row(self, i):
+        row = self.picker.listbox.get_row_at_index(i)
+        if not self.picker.get_visible() or row is None:
+            _log(f"TestConfirmRow ignored: no row {i}")
+            return False
+        on_paste = self.picker.on_paste
+        self.picker.on_paste = lambda item: _log(f"confirmed {item['id']} (paste keys skipped)")
+        try:
+            self.picker._activate(row, edit=False)
+        finally:
+            self.picker.on_paste = on_paste
+        return False
 
     def _test_input(self, method, args):
         ov = self.overlay
@@ -403,7 +432,7 @@ class App(Gtk.Application):
         self._migrate_legacy_captures()
         self.history.prune()
         self.picker = Picker(self, self.history, on_paste=self._paste_into_focused, on_edit=self._edit_image,
-                             on_raise=self._activate_window, log=_log)
+                             on_raise=self._activate_window, on_place=self._place_window, log=_log)
         self.editor = Editor(self, on_done=self._edit_done)
         self._watch_klipper()
         GLib.idle_add(self.picker.prerender)
@@ -456,6 +485,24 @@ class App(Gtk.Application):
                               "}\n")
         except Exception as e:  # noqa: BLE001
             _log(f"activate {title} failed: {e}")
+
+    def _place_window(self, title, g):
+        """Move/resize our window with this caption, now or as soon as KWin maps it."""
+        rect = f"{{x: {int(g['x'])}, y: {int(g['y'])}, width: {int(g['w'])}, height: {int(g['h'])}}}"
+        try:
+            self._run_kwin_js("snapshot-kwin-place",
+                              f"const title = {json.dumps(title)};\n"
+                              "let done = false;\n"
+                              "function place(w) {\n"
+                              "  if (done || !w || w.caption !== title) return;\n"
+                              f"  done = true; w.frameGeometry = {rect};\n"
+                              f'  const g = w.frameGeometry; callDBus("{APP_ID}", "{OBJECT_PATH}", "{APP_ID}", '
+                              "\"PickerGeometry\", JSON.stringify({x: g.x, y: g.y, w: g.width, h: g.height}));\n"
+                              "}\n"
+                              "for (const w of workspace.windowList()) place(w);\n"
+                              "if (!done) workspace.windowAdded.connect(place);\n")
+        except Exception as e:  # noqa: BLE001
+            _log(f"place {title} failed: {e}")
 
     def _move_pointer(self, x, y, done):
         def read(cb):

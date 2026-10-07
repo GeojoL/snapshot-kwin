@@ -67,6 +67,22 @@ call TestHideHistory; sleep 0.5
 check "history closed by hook" '[ "$(nlog "history closed (test)")" -ge 1 ]'
 kill $GF 2>/dev/null
 
+# 6. picker: confirming an older entry makes it the clipboard content and the
+#    newest history entry; geometry reported by KWin is restored on reopen
+IDX="$XDG_STATE_HOME/snapshot-kwin/clipboard/index.json"
+second=$("$SKW_PY" -c "import json,sys;print(json.load(open(sys.argv[1]))[1]['hash'])" "$IDX")
+call ShowHistory; sleep 1
+call TestConfirmRow i 1; sleep 1
+check "confirmed entry is the clipboard content" '[ "$(wl-paste --no-newline --type image/png | sha256sum | cut -d" " -f1)" = "$second" ]'
+check "confirmed entry moved to the top" '[ "$("$SKW_PY" -c "import json,sys;print(json.load(open(sys.argv[1]))[0][\"hash\"])" "$IDX")" = "$second" ]'
+call ShowHistory; sleep 1
+call PickerGeometry s '{"x":120,"y":90,"w":520,"h":420}'; sleep 0.3
+call TestHideHistory; sleep 0.5
+check "picker geometry saved" 'grep -q "\"x\": 120" "$XDG_STATE_HOME/snapshot-kwin/picker.json"'
+call ShowHistory; sleep 1.5
+check "picker reopened where it was left" '[ "$(nlog "picker geometry 120,90 520x420")" -ge 2 ]'
+call TestHideHistory; sleep 0.5
+
 [ -n "${LONG:-}" ] && cp "$LONG" "${SKW_KEEP:-/dev/null}" 2>/dev/null || true
 kill $DAEMON $KWIN 2>/dev/null
 # Services D-Bus-activated on the private bus (portal, ksecretd, ...) outlive it;
@@ -77,6 +93,7 @@ for env in /proc/[0-9]*/environ; do
   grep -qz "^DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS\$" "$env" 2>/dev/null && kill "$pid" 2>/dev/null
 done
 sleep 0.5
+[ -n "${SKW_LOG_OUT:-}" ] && cp "$SKW_WORK/daemon.log" "$SKW_LOG_OUT"
 echo "e2e: $pass passed, $fail failed"
 grep -oE 'long capture done.*' "$SKW_WORK/daemon.log" | cut -c1-120
 [ "$fail" -eq 0 ]
