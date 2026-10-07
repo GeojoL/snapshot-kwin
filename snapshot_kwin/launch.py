@@ -3,8 +3,7 @@
 The system unit runs as the desktop user but outside the user's session, so it
 has none of the session's environment. Wait until the user's Plasma Wayland
 session is up (session bus present, KWin on it, a Wayland socket), adopt the
-user manager's environment, then exec the daemon in this same process, so
-systemd keeps tracking one main PID (Type=notify, watchdog).
+user manager's environment, then exec the daemon in this same process.
 
 In Game Mode (gamescope) there is no KWin, so it keeps waiting, like the
 per-user unit that is only wanted by plasma-workspace.target.
@@ -15,10 +14,7 @@ import subprocess
 import sys
 import time
 
-from . import sdnotify
-
-KEEP = ("NOTIFY_SOCKET", "WATCHDOG_USEC", "WATCHDOG_PID", "PYTHONPATH", "PYTHONDONTWRITEBYTECODE",
-        "INVOCATION_ID", "JOURNAL_STREAM", "HOME", "USER", "LOGNAME")
+KEEP = ("PYTHONPATH", "PYTHONDONTWRITEBYTECODE", "INVOCATION_ID", "JOURNAL_STREAM", "HOME", "USER", "LOGNAME")
 
 
 def session_env():
@@ -57,9 +53,7 @@ def main():
             break
         if not announced:
             print("snapshot-kwin: waiting for the Plasma Wayland session", file=sys.stderr, flush=True)
-            sdnotify.notify("STATUS=waiting for the Plasma Wayland session")
             announced = True
-        sdnotify.notify("WATCHDOG=1")
         time.sleep(2)
     os.execve(sys.executable, [sys.executable, "-m", "snapshot_kwin.app"], env)
 

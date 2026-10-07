@@ -48,22 +48,17 @@ cd snapshot-kwin
 
 ### 受保护模式（可选，需要 sudo）
 
-想让服务不能被随手关掉（比如被别的脚本或程序 `systemctl --user stop`），在完成上面的安装后运行：
+不想让服务被别的程序随手关掉（比如 `systemctl --user stop`），在完成上面的安装后运行：
 
 ```bash
 sudo tools/install-system
 ```
 
-之后守护进程由系统级服务 `/etc/systemd/system/snapshot-kwin.service` 运行（仍以你的用户身份，连接你的桌面会话），区别是：
+之后守护进程由系统级服务 `/etc/systemd/system/snapshot-kwin.service` 运行（仍以你的用户身份，连接你的桌面会话）。停止、禁用都需要 root（`sudo systemctl stop snapshot-kwin`），应用菜单里的「开启/关闭」会弹出密码框。进程被杀掉后，systemd 会在 1 秒后重新启动它。系统服务不能执行家目录里的程序（SELinux），所以解释器副本放在 `/usr/local/libexec/snapshot-kwin/`；代码仍然从 clone 的目录运行，更新代码后用 `sudo systemctl restart snapshot-kwin` 生效。
 
-- 停止、禁用都需要 root：`sudo systemctl stop snapshot-kwin`；应用菜单里的「开启/关闭」会弹出密码框；
-- 代码和解释器副本复制到 `/usr/local/lib/snapshot-kwin/`、`/usr/local/libexec/snapshot-kwin/`，归 root 所有，普通进程改不了；更新代码后要再运行一次 `sudo tools/install-system`；
-- 同一用户的进程仍然可以 kill 它（Linux 不允许阻止同一用户发信号），但它会在 1 秒内被系统重新拉起；连续被杀时间隔逐步加长，最长 10 秒；
-- 主循环卡住 30 秒，看门狗会让 systemd 重启它；每次启动前，解释器副本会自动和系统的 `python3` 同步，避免系统升级后起不来。
+在作者的 Bazzite 上实测过：不用 root 执行 `systemctl stop` / `disable` 会被拒绝；`kill -9` 后 3 秒内已重新运行，截图正常。开机后它会等 Plasma Wayland 会话就绪再启动，这一点还没在真机重启时验证过（待验证）。
 
-在作者的 Bazzite 上实测过：不用 root 执行 `systemctl stop` / `disable` 会被拒绝；`kill -9` 后 1 秒内恢复；用 SIGSTOP 模拟卡死，30 秒时看门狗触发，随后自动恢复。开机后、登录前，它会等待 Plasma Wayland 会话就绪再启动，这个等待流程还没有在真机重启时验证过（待验证）。
-
-取消受保护模式：`sudo tools/install-system --uninstall`，然后运行 `./install.sh` 回到用户级服务。
+取消：`sudo tools/install-system --uninstall`，然后运行 `./install.sh` 回到用户级服务。
 
 ## 按键
 
@@ -120,7 +115,7 @@ sudo tools/install-system
 ## 常见问题
 
 **按快捷键没反应？**
-先看服务是否在运行：`systemctl --user status snapshot-kwin`，日志用 `journalctl --user -u snapshot-kwin` 查看（受保护模式下用 `systemctl status snapshot-kwin` 和 `journalctl -u snapshot-kwin`）。也可以在应用菜单里搜「截图」，右键选「开启」。
+先看服务是否在运行：`systemctl --user status snapshot-kwin`，日志用 `journalctl --user -u snapshot-kwin` 查看（受保护模式下去掉 `--user`）。也可以在应用菜单里搜「截图」，右键选「开启」。
 
 **我用了 xremap 之类的按键映射工具，Meta+Alt+1 被吃掉了？**
 映射工具如果忽略多余的修饰键，应用里的映射（比如 Chrome 的 Meta+1 → Ctrl+1）会先吞掉截图键。把截图快捷键放在映射规则的最前面直接放行即可。
@@ -149,7 +144,7 @@ sudo tools/install-system
 
 ## 原理（给开发者）
 
-截图用的是 KWin 受限的 `org.kde.KWin.ScreenShot2` D-Bus 接口。KWin 按调用者可执行文件的真实路径，去匹配声明了 `X-KDE-DBUS-Restricted-Interfaces` 的 `.desktop` 文件，所以安装脚本只授权一份专用的解释器副本，系统里的其他 Python 脚本不会因此获得截屏权限。剪贴板变化由守护进程启动的 `wl-paste --watch` 监听（KWin 提供 ext-data-control 协议，不需要窗口焦点，也不依赖 Klipper），监听进程退出会自动重启。守护进程通过 sd_notify 向 systemd 报告就绪并定时发看门狗信号（`Type=notify`、`WatchdogSec=30`），服务配置为总是重启、不设重启次数上限。常驻的 KWin 脚本在窗口变化时把窗口位置推给守护进程，点选窗口无需再查询；剪贴板历史窗口的位置和大小也由它回报。一个只作用于本工具窗口的 KWin 效果去掉了打开/关闭动画。界面是 Python + GTK4 + cairo，全部使用发行版自带的包。
+截图用的是 KWin 受限的 `org.kde.KWin.ScreenShot2` D-Bus 接口。KWin 按调用者可执行文件的真实路径，去匹配声明了 `X-KDE-DBUS-Restricted-Interfaces` 的 `.desktop` 文件，所以安装脚本只授权一份专用的解释器副本，系统里的其他 Python 脚本不会因此获得截屏权限。剪贴板变化由守护进程启动的 `wl-paste --watch` 监听（KWin 提供 ext-data-control 协议，不需要窗口焦点，也不依赖 Klipper），监听进程退出会自动重启。常驻的 KWin 脚本在窗口变化时把窗口位置推给守护进程，点选窗口无需再查询；剪贴板历史窗口的位置和大小也由它回报。一个只作用于本工具窗口的 KWin 效果去掉了打开/关闭动画。界面是 Python + GTK4 + cairo，全部使用发行版自带的包。
 
 测试：`python3 -m unittest discover -s tests` 跑单元测试；`tests/e2e/run.sh` 在独立的 D-Bus 会话、独立挂载命名空间里启动不可见的嵌套 KWin 跑端到端测试，不碰你的桌面、焦点、输入和剪贴板。设计记录见 [docs/design-notes.zh.md](docs/design-notes.zh.md)。
 

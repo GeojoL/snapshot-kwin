@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.0.7 — 2026-10-07
+
+- Protected mode reduced to what it is for: a system unit that only root can
+  stop or disable, restarted when killed. Removed again: watchdog/sd_notify,
+  interpreter re-sync, root-owned code copy, restart back-off. The per-user unit
+  is back to the v0.0.5 one. The protected unit runs the checkout's code; only
+  the authorized interpreter copy lives in /usr/local/libexec (SELinux does not
+  let a system service execute files from a home directory).
+
 ## v0.0.6 — 2026-10-07
 
 - Service hardening: `Type=notify` with a 30 s watchdog (a hung main loop is

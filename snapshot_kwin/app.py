@@ -31,7 +31,6 @@ from .capture import CaptureError, KWinCapture  # noqa: E402
 from .clipboard import History, Picker  # noqa: E402
 from .editor import Editor  # noqa: E402
 from .pointer import PointerMover, ydotool_move  # noqa: E402
-from . import sdnotify  # noqa: E402
 from .stitch import Stitcher  # noqa: E402
 
 
@@ -440,12 +439,6 @@ class App(Gtk.Application):
         GLib.idle_add(self.picker.prerender)
         GLib.idle_add(self._reload_window_feed)
         _log("ready")
-        # systemd: Type=notify readiness, and WatchdogSec= pings from the main loop,
-        # so a hung loop (not just a crash) gets the daemon restarted
-        sdnotify.notify("READY=1\nSTATUS=ready")
-        every = sdnotify.watchdog_interval_s()
-        if every:
-            GLib.timeout_add_seconds(every, lambda: sdnotify.notify("WATCHDOG=1") or True)
 
     # ── long (scrolling) capture ─────────────────────────────
     LONG_SETTLE_MS = 260     # wait after each wheel burst for smooth scrolling to finish
