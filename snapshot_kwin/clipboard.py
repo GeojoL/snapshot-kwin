@@ -237,14 +237,15 @@ class Picker:
             .snapshot-kwin-picker row { padding: 8px 12px; color: #cdd6f4; }
             .snapshot-kwin-picker row:selected { background: #313244; border-radius: 8px; }
             .snapshot-kwin-picker .hint { color: #7f849c; margin: 6px 12px 10px; font-size: 0.9em; }
-            .snapshot-kwin-picker .titlebar { color: #7f849c; font-size: 0.85em; padding: 6px 12px 0; }
+            .snapshot-kwin-picker .picker-title { background: none; color: #7f849c; font-size: 0.85em; padding: 8px 12px 0; }
+            .snapshot-kwin-picker scrolledwindow, .snapshot-kwin-picker list { background: transparent; }
         """)
         Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
         self.box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         # undecorated window: this strip moves it (Gtk.WindowHandle starts a compositor move)
         handle = Gtk.WindowHandle()
-        handle.set_child(Gtk.Label(label="剪贴板历史", xalign=0, css_classes=["titlebar"]))
+        handle.set_child(Gtk.Label(label="剪贴板历史", xalign=0, css_classes=["picker-title"]))
         self.box.append(handle)
         self.search = Gtk.SearchEntry(placeholder_text="搜索文字…")
         self.search.connect("search-changed", lambda *_: self._on_search())

@@ -1,10 +1,16 @@
 # Changelog
 
-## Unreleased
+## v0.0.4 — 2026-10-07
+
+First public release.
 
 - Clipboard history window can be moved (drag the title strip) and resized (drag
   an edge or corner); its geometry is remembered across opens (KWin reports it,
   KWin restores it, since a Wayland client cannot place itself).
+- Clipboard history styling no longer depends on the GTK theme (the title strip
+  was drawn as a light headerbar and the list white under the default theme).
+- README rewritten in Chinese (English summary at the end) with real screenshots
+  taken in a nested headless KWin.
 - Enter in the clipboard history moves the confirmed entry to the top of the
   history as well as onto the clipboard, so Meta+V keeps pasting it.
 
