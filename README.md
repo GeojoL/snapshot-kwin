@@ -107,8 +107,9 @@ The end-to-end suite starts `kwin_wayland --virtual` on a private D-Bus session
 with throwaway config/state directories and drives the daemon through test-only
 D-Bus hooks, so it never touches your desktop, focus, input or clipboard. The
 long-capture scenario uses a terminal whose output scrolls by itself, so no input
-is injected at all. `packaging/snapshot-kwin-nightly.timer` runs everything
-nightly (`tests/nightly.sh`, logs in `~/.local/state/snapshot-kwin/e2e/`).
+is injected at all. It also runs in its own mount namespace, so a portal started
+on the private bus cannot unmount the desktop's Flatpak document portal. Run both
+suites before committing a change.
 
 ## Roadmap
 

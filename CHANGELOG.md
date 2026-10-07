@@ -38,7 +38,8 @@
 - No open/close animation for snapshot-kwin's windows; CJK overlay hints via
   Pango; captures were missing from history (self-owned selection) — fixed.
 - Tests: isolated end-to-end suite in a nested invisible KWin (never touches the
-  desktop) and a nightly systemd timer; 23 unit tests.
+  desktop; own mount namespace, so the desktop's Flatpak document portal stays
+  mounted), run on demand before committing; 23 unit tests.
 
 ## v0.0.1 — 2026-10-06
 

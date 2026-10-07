@@ -1,7 +1,0 @@
-[Unit]
-Description=snapshot-kwin nightly tests (isolated nested KWin; does not touch the desktop)
-
-[Service]
-Type=oneshot
-ExecStart=%h/.repo-links/snapshot-kwin/tests/nightly.sh
-Nice=10
