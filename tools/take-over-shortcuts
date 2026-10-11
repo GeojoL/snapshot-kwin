@@ -4,7 +4,7 @@
 Idempotent; run by install.sh. Uses the live kglobalaccel D-Bus API, so it takes
 effect immediately and is persisted by KDE in ~/.config/kglobalshortcutsrc.
 
-  snapshot-kwin capture : Meta+Alt+1, Print, Meta+Shift+Print
+  snapshot-kwin capture : Meta+Alt+1, Print, Meta+Shift+Print (KWin script action)
                           (not Meta+Shift+S: it stays Save As, the macOS habit)
   snapshot-kwin history : Meta+Shift+V
   Spectacle             : every screenshot action cleared; Record* left as they are
@@ -43,7 +43,10 @@ def set_keys(component, action, friendly_component, friendly_action, codes):
 # free the keys first, then claim them
 for action, friendly in SPECTACLE_SCREENSHOT_ACTIONS:
     set_keys("org.kde.spectacle.desktop", action, "Spectacle", friendly, [])
-set_keys("snapshot-kwin-capture.desktop", "_launch", "snapshot-kwin 截图", "snapshot-kwin 截图", CAPTURE)
+# capture keys live on the KWin script's action (no process spawn per press);
+# the .desktop entry stays for the menu but holds no keys
+set_keys("snapshot-kwin-capture.desktop", "_launch", "snapshot-kwin 截图", "snapshot-kwin 截图", [])
+set_keys("kwin", "snapshot-kwin-capture", "KWin", "snapshot-kwin 截图", CAPTURE)
 set_keys("snapshot-kwin-history.desktop", "_launch", "snapshot-kwin 剪贴板历史", "snapshot-kwin 剪贴板历史", HISTORY)
 print("shortcuts: snapshot-kwin owns Meta+Alt+1 / Print / Meta+Shift+Print / Meta+Shift+V; "
       "Spectacle keeps recording only")

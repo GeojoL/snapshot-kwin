@@ -47,6 +47,8 @@ DBUS_XML = f"""
   <interface name="{APP_ID}">
     <method name="UpdateWindows"><arg type="s" name="json" direction="in"/></method>
     <method name="Capture"/>
+    <!-- from the KWin script's hotkey: key-press time (ms since epoch) for latency logging -->
+    <method name="CaptureAt"><arg type="d" name="key_ms" direction="in"/></method>
     <method name="ShowHistory"/>
     <method name="ShotToFile"><arg type="s" name="path" direction="in"/><arg type="s" name="result" direction="out"/></method>
     <method name="ReportCursor"><arg type="i" name="x"/><arg type="i" name="y"/></method>
@@ -334,6 +336,10 @@ class App(Gtk.Application):
         elif method == "Capture":
             invocation.return_value(None)
             GLib.idle_add(self.trigger)
+        elif method == "CaptureAt":
+            key_ms = params.unpack()[0]
+            invocation.return_value(None)
+            GLib.idle_add(lambda: self.trigger(key_ms))
         elif method == "ReportCursor":
             x, y = params.unpack()
             invocation.return_value(None)
@@ -748,7 +754,7 @@ class App(Gtk.Application):
     def do_activate(self):
         pass  # activation alone does nothing; the "capture" action / Capture() does the work
 
-    def trigger(self):
+    def trigger(self, key_ms=None):
         if self.long is not None:
             self.long["stop"] = True
             return False
@@ -761,7 +767,9 @@ class App(Gtk.Application):
             _log(f"capture failed: {e}")
             return False
         _log(f"grabbed in {time.time() * 1000 - t0:.0f} ms windows={len(self.windows)}")
-        self.overlay.show_capture(surface, list(self.windows), t0)
+        if key_ms is not None:
+            _log(f"key-to-daemon {t0 - key_ms:.0f} ms")
+        self.overlay.show_capture(surface, list(self.windows), t0 if key_ms is None else key_ms)
         return False
 
 

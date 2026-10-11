@@ -1,5 +1,11 @@
 # 更新日志
 
+## v0.0.8 — 2026-10-11
+
+- 截图快捷键（Meta+Alt+1 / Print / Meta+Shift+Print）改由 KWin 脚本直接处理：按键后只发一条 D-Bus 消息给守护进程，不再每次经 `.desktop` 启动 systemd 单元、sh 和 busctl
+- 日志新增 `key-to-daemon`，`overlay-visible latency_ms` 改为从按键开始计时
+- 菜单里的「snapshot-kwin 截图」入口保留，但不再绑定按键
+
 ## v0.0.7 — 2026-10-07
 
 - 受保护模式只保留一个作用：服务的停止、禁用都需要 sudo，进程被杀掉后自动重新启动

@@ -26,6 +26,17 @@ sleep 1
 call Capture; sleep 0.6; call TestSelect iiii 100 100 400 300; sleep 0.8
 check "region 400x300" '[ "$(png_size "$(newest)")" = 400x300 ]'
 
+# 1b. hotkey path: the source-tree KWin script owns the capture shortcut and
+#     calls CaptureAt directly (kglobalaccel invokes the action; no key events)
+busctl --user call org.kde.KWin /Scripting org.kde.kwin.Scripting loadScript ss \
+  "$SKW_SRC/kwin-script/contents/code/main.js" skw-e2e-src >/dev/null
+busctl --user call org.kde.KWin /Scripting org.kde.kwin.Scripting start >/dev/null; sleep 1
+busctl --user call org.kde.kglobalaccel /component/kwin org.kde.kglobalaccel.Component \
+  invokeShortcut s snapshot-kwin-capture; sleep 0.6
+call TestSelect iiii 10 10 120 80; sleep 0.8
+check "hotkey action reaches daemon via KWin script" 'grep -q "key-to-daemon" "$SKW_WORK/daemon.log"'
+check "hotkey region 120x80" '[ "$(png_size "$(newest)")" = 120x80 ]'
+
 # 2. click a window -> its frame size
 ghostty --title=e2e-win -e sleep 60 >/dev/null 2>&1 & GW=$!; sleep 3
 call Capture; sleep 0.6; call TestClick ii 800 500; sleep 0.8

@@ -43,3 +43,10 @@ workspace.windowRemoved.connect(snapshot);
 workspace.windowActivated.connect(snapshot);
 workspace.currentDesktopChanged.connect(snapshot);
 snapshot();
+
+// Capture hotkey handled inside KWin: one D-Bus message to the daemon instead of
+// kglobalaccel launching a .desktop (systemd scope + sh + busctl) per press.
+// Extra keys (Print, Meta+Shift+Print) are added by tools/take-over-shortcuts.
+registerShortcut("snapshot-kwin-capture", "snapshot-kwin 截图", "Meta+Alt+1", function () {
+    callDBus(SERVICE, PATH, IFACE, "CaptureAt", Date.now());
+});
